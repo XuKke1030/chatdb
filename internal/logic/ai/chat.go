@@ -1,0 +1,146 @@
+package ai
+
+import (
+	"ai-chat-sql/internal/consts"
+	"ai-chat-sql/internal/dao"
+	"ai-chat-sql/internal/model"
+	"ai-chat-sql/internal/service"
+	"context"
+	"io"
+	"time"
+
+	"github.com/cloudwego/eino-ext/components/tool/mcp"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/flow/agent/react"
+	"github.com/cloudwego/eino/schema"
+	"github.com/gogf/gf/v2/database/gdb"
+	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/util/gconv"
+	gMcp "github.com/mark3labs/mcp-go/mcp"
+)
+
+type sAiChat struct{}
+
+func init() {
+	service.RegisterAiChat(NewAiChat())
+}
+
+func NewAiChat() *sAiChat {
+	return &sAiChat{}
+}
+
+// Chat 聊天
+func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan any) {
+	var err error
+	defer func() {
+		if err != nil {
+			respChan <- err
+			close(respChan)
+		}
+	}()
+	// 发送开始包
+	if err = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+		Event: "start",
+	}, respChan); err != nil {
+		return
+	}
+	// 创建响应通道
+	HeartbeatCtx, cancel := context.WithCancel(ctx)
+	s.AiChatHeartbeat(HeartbeatCtx, respChan)
+
+	llm, err := service.AI().GetChatModel(in.Ai, in.Model)
+	if err != nil {
+		cancel()
+		return
+	}
+	// 获取MCP工具
+	mcpTools, err := mcp.GetTools(ctx, &mcp.Config{
+		Cli: consts.McpClient,
+		ToolCallResultHandler: func(ctx context.Context, name string, result *gMcp.CallToolResult) (out *gMcp.CallToolResult, err error) {
+			dataMap := g.Map{
+				"name":   name,
+				"output": result.Content[0],
+			}
+			// SQL_Actuator 工具特殊处理，从请求参数中提取 SQL 语句
+			// 注意：这里需要从 context 中获取工具的输入参数
+			// 由于 result 中没有直接的输入信息，我们会在下一步通过拦截来实现
+			model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+				Event: "tool_call",
+				Data:  dataMap,
+			}, respChan)
+			out = result
+			return
+		},
+	})
+	if err != nil {
+		cancel()
+		return
+	}
+	// 创建React智能体
+	aiAgent, err := react.NewAgent(ctx, &react.AgentConfig{
+		ToolCallingModel: llm,
+		ToolsConfig:      compose.ToolsNodeConfig{Tools: mcpTools},
+		MaxStep:          50,
+		// 自定义 StreamToolCallChecker：DeepSeek 等模型会先输出文本再输出 tool calls
+		// 默认实现只检查第一个 chunk，会导致 tool calls 被忽略
+		StreamToolCallChecker: func(ctx context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
+			defer sr.Close()
+			for {
+				msg, err := sr.Recv()
+				if err == io.EOF {
+					return false, nil
+				}
+				if err != nil {
+					return false, err
+				}
+				if len(msg.ToolCalls) > 0 {
+					return true, nil
+				}
+			}
+		},
+	})
+	if err != nil {
+		cancel()
+		return
+	}
+	// 获取需要操作的数据库信息
+	dbTypeT, err := dao.DatabaseConf.Ctx(ctx).Cache(gdb.CacheOption{
+		Duration: 30 * time.Minute,
+		Name:     "db_type:" + gconv.String(in.DatabaseId),
+	}).Where("database_id = ?", in.DatabaseId).Value("db_type")
+	if err != nil {
+		cancel()
+		return
+	}
+
+	prompt, err := service.Prompt().GetPrompt(ctx, consts.PromptMain)
+	if err != nil {
+		cancel()
+		return
+	}
+	if g.IsEmpty(in.Prompt) {
+		in.Prompt = "-"
+	}
+
+	out, err := aiAgent.Stream(ctx, []*schema.Message{
+		{
+			Role:    schema.System,
+			Content: prompt.GetContent(in.DatabaseId, dbTypeT.String()),
+		},
+		{
+			Role:    schema.System,
+			Content: in.Prompt,
+		},
+		{
+			Role:    schema.User,
+			Content: in.Message,
+		},
+	})
+	if err != nil {
+		cancel()
+		return
+	}
+
+	// AI输出流
+	s.AiChatStreamOut(ctx, respChan, out, cancel)
+}

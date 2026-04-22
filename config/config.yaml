@@ -1,0 +1,29 @@
+# ChatDB 配置文件
+
+server:
+  address: ":8000"
+  mode: "debug"
+
+ai:
+  openai:
+    baseUrl: "https://api.openai.com/v1"
+    key: "622000f3-1550-4cf7-b282-f681d9ec8d78"
+  deepseek:
+    baseUrl: "https://api.deepseek.com"
+    key: "sk-e11af6f5a4aa41bf8eabff127c22b8dc"
+  mcp:
+    address: ":9000"
+
+jwt:
+  - subject: "ai-chat-user"
+    secret: "chatdb-jwt-secret-key-2024"
+    expire: 24
+    issuer: "chatdb"
+
+db:
+  readonly: false
+
+database:
+  master:
+    link: "mysql:root:123456@tcp(127.0.0.1:3306)/chatdb?charset=utf8mb4&parseTime=true"
+    debug: true
