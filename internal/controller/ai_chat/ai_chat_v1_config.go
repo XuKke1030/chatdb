@@ -8,6 +8,7 @@ import (
 	"ai-chat-sql/internal/service"
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -18,6 +19,7 @@ import (
 
 func (c *ControllerV1) SetDataBaseConfig(ctx context.Context, req *v1.SetDataBaseConfigReq) (res *v1.SetDataBaseConfigRes, err error) {
 	res = &v1.SetDataBaseConfigRes{}
+	normalizeDatabaseConfigInput(&req.DbName, &req.UserName, &req.Host, &req.DbType)
 	// 检查数据库类型是否支持
 	supportedTypes := map[string]bool{
 		"mysql":    true,
@@ -65,6 +67,7 @@ func (c *ControllerV1) SetDataBaseConfig(ctx context.Context, req *v1.SetDataBas
 
 func (c *ControllerV1) UpdateDataBaseConfig(ctx context.Context, req *v1.UpdateDataBaseConfigReq) (res *v1.UpdateDataBaseConfigRes, err error) {
 	res = &v1.UpdateDataBaseConfigRes{}
+	normalizeDatabaseConfigInput(&req.DbName, &req.UserName, &req.Host, &req.DbType)
 	// 检查数据库类型是否支持
 	supportedTypes := map[string]bool{
 		"mysql":    true,
@@ -115,6 +118,7 @@ func (c *ControllerV1) UpdateDataBaseConfig(ctx context.Context, req *v1.UpdateD
 	if _, err = dao.DatabaseConf.Ctx(ctx).Where("database_id = ?", req.DatabaseId).Data(updateData).Update(); err != nil {
 		return
 	}
+	service.Config().InvalidateDataBase(ctx, req.DatabaseId)
 
 	return
 }
@@ -135,6 +139,7 @@ func (c *ControllerV1) DeleteDataBaseConfig(ctx context.Context, req *v1.DeleteD
 	if _, err = dao.DatabaseConf.Ctx(ctx).Where("database_id = ?", req.DatabaseId).Delete(); err != nil {
 		return
 	}
+	service.Config().InvalidateDataBase(ctx, req.DatabaseId)
 
 	return
 }
@@ -148,6 +153,9 @@ func (c *ControllerV1) GetDataBaseConfigList(ctx context.Context, req *v1.GetDat
 	}
 	if req.Size <= 0 {
 		req.Size = 10
+	}
+	if req.Size > 100 {
+		req.Size = 100
 	}
 
 	// 查询总数
@@ -212,4 +220,11 @@ func (c *ControllerV1) GetAiModelList(ctx context.Context, req *v1.GetAiModelLis
 	res.List = data.Data
 	res.Total = len(res.List)
 	return
+}
+
+func normalizeDatabaseConfigInput(dbName *string, userName *string, host *string, dbType *string) {
+	*dbName = strings.TrimSpace(*dbName)
+	*userName = strings.TrimSpace(*userName)
+	*host = strings.TrimSpace(*host)
+	*dbType = strings.ToLower(strings.TrimSpace(*dbType))
 }

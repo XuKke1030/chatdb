@@ -204,6 +204,17 @@ func (s *sMcpHandler) GetList() []model.McpReg {
 			},
 			Fn: service.McpTool().ExportData,
 		},
+		{
+			Name:        "RecognizeVehiclePlate",
+			Description: "Recognize vehicle plate origin, including mainland China province/city, Yue-Z Hong Kong/Macau cross-border plates, and local Hong Kong/Macau plates",
+			ToolOptions: []mcp.ToolOption{
+				mcp.WithString("plateNumber",
+					mcp.Required(),
+					mcp.Description("Vehicle plate number, e.g. 粤C12345, 粤Z1234港, 粤Z1234澳, AB1234, MZ-12-34"),
+				),
+			},
+			Fn: service.McpTool().RecognizeVehiclePlate,
+		},
 	}
 }
 

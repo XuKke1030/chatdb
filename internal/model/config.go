@@ -16,6 +16,9 @@ type ServerConfig struct {
 }
 
 func (t *ConfigData) IsDebug() (ok bool) {
+	if t == nil || t.Server == nil {
+		return false
+	}
 	return t.Server.Mode == "debug"
 }
 

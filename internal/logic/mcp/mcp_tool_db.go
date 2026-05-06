@@ -265,6 +265,25 @@ func getSizeQuery(dbType, dbname string) string {
 func isReadOnlySQL(sql string) bool {
 	// 去除前后空格并转换为大写
 	sql = strings.TrimSpace(strings.ToUpper(sql))
+	sql = strings.TrimSuffix(sql, ";")
+	sql = strings.Join(strings.Fields(sql), " ")
+	if sql == "" {
+		return false
+	}
+	if strings.Contains(sql, ";") {
+		return false
+	}
+	dangerousKeywords := []string{
+		" INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ", " CREATE ",
+		" TRUNCATE ", " REPLACE ", " GRANT ", " REVOKE ", " EXEC ", " CALL ",
+		" MERGE ", " LOCK ", " UNLOCK ", " RENAME ", " OUTFILE", " DUMPFILE",
+	}
+	paddedSQL := " " + sql + " "
+	for _, keyword := range dangerousKeywords {
+		if strings.Contains(paddedSQL, keyword) {
+			return false
+		}
+	}
 
 	// 检查是否以SELECT开头（包括WITH语句，因为WITH通常用于查询）
 	if strings.HasPrefix(sql, "SELECT") || strings.HasPrefix(sql, "WITH") {

@@ -26,11 +26,20 @@ type (
 		// Chat 聊天
 		Chat(ctx context.Context, in model.ChatInput, respChan chan any)
 	}
+	IAlert interface {
+		// GetAlertList 获取告警列表
+		GetAlertList(ctx context.Context, userId int, topic string) ([]model.AlertItem, error)
+		// DismissAlert 关闭告警
+		DismissAlert(ctx context.Context, userId int, alertId int) error
+		// AddAlert 添加告警
+		AddAlert(ctx context.Context, alert model.AlertItem)
+	}
 )
 
 var (
 	localAI     IAI
 	localAiChat IAiChat
+	localAlert  IAlert
 )
 
 func AI() IAI {
@@ -53,4 +62,15 @@ func AiChat() IAiChat {
 
 func RegisterAiChat(i IAiChat) {
 	localAiChat = i
+}
+
+func Alert() IAlert {
+	if localAlert == nil {
+		panic("implement not found for interface IAlert, forgot register?")
+	}
+	return localAlert
+}
+
+func RegisterAlert(i IAlert) {
+	localAlert = i
 }

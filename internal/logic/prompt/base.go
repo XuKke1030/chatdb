@@ -7,6 +7,8 @@ import (
 	"ai-chat-sql/utility"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -25,8 +27,34 @@ func NewPrompt() *sPrompt {
 		promptList: make([]*model.PromptGetListOutputItem, 0),
 		promptMap:  make(map[string]*model.PromptGetListOutputItem),
 		mutex:      new(sync.RWMutex),
-		promptDir:  "./prompt",
+		promptDir:  resolvePromptDir(),
 	}
+}
+
+func resolvePromptDir() string {
+	if configured := os.Getenv("CHATDB_PROMPT_DIR"); configured != "" {
+		return configured
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return "./prompt"
+	}
+
+	for {
+		candidate := filepath.Join(wd, "prompt")
+		if stat, statErr := os.Stat(candidate); statErr == nil && stat.IsDir() {
+			return candidate
+		}
+
+		parent := filepath.Dir(wd)
+		if parent == wd {
+			break
+		}
+		wd = parent
+	}
+
+	return "./prompt"
 }
 
 func init() {

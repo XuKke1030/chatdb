@@ -34,3 +34,4 @@ logs/
 *.test
 *.out
 coverage/
+.gocache/

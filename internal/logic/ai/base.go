@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/deepseek"
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -31,6 +32,9 @@ func (s *sAI) GetChatModel(ai, model string) (chatModel einoModel.ToolCallingCha
 		if model == "" {
 			model = "gpt-4o-mini"
 		}
+		if err = validateAIProviderConfig("openai", consts.Config.AiConfig.OpenAI.BaseUrl, consts.Config.AiConfig.OpenAI.Key); err != nil {
+			return
+		}
 		chatModel, err = openai.NewChatModel(consts.Ctx, &openai.ChatModelConfig{
 			BaseURL: consts.Config.AiConfig.OpenAI.BaseUrl,
 			Model:   model,
@@ -41,6 +45,9 @@ func (s *sAI) GetChatModel(ai, model string) (chatModel einoModel.ToolCallingCha
 		if model == "" {
 			model = "deepseek-chat"
 		}
+		if err = validateAIProviderConfig("deepseek", consts.Config.AiConfig.DeepSeek.BaseUrl, consts.Config.AiConfig.DeepSeek.Key); err != nil {
+			return
+		}
 		chatModel, err = deepseek.NewChatModel(consts.Ctx, &deepseek.ChatModelConfig{
 			BaseURL: consts.Config.AiConfig.DeepSeek.BaseUrl,
 			Model:   model,
@@ -48,6 +55,7 @@ func (s *sAI) GetChatModel(ai, model string) (chatModel einoModel.ToolCallingCha
 		})
 		return
 	}
+	err = fmt.Errorf("不支持的 AI 类型: %s", ai)
 	return
 }
 
@@ -68,7 +76,10 @@ func (s *sAI) GetChatModeListJson(ctx context.Context, ai string) (json string, 
 		err = errors.New("未知的操作")
 		return
 	}
-	resp, err := gclient.New().Discovery(nil).SetHeader("authorization", key).Get(ctx, fmt.Sprintf("%s/models", url))
+	if err = validateAIProviderConfig(ai, url, key); err != nil {
+		return
+	}
+	resp, err := gclient.New().Discovery(nil).SetHeader("authorization", "Bearer "+key).Get(ctx, fmt.Sprintf("%s/models", url))
 	if err != nil {
 		return
 	}
@@ -78,4 +89,17 @@ func (s *sAI) GetChatModeListJson(ctx context.Context, ai string) (json string, 
 	}
 	json = resp.ReadAllString()
 	return
+}
+
+func validateAIProviderConfig(provider string, baseURL string, key string) error {
+	if strings.TrimSpace(baseURL) == "" {
+		return fmt.Errorf("%s baseUrl 未配置", provider)
+	}
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("%s API key 未配置，请设置环境变量或配置文件", provider)
+	}
+	if strings.Contains(strings.ToUpper(key), "CHANGE_ME") {
+		return fmt.Errorf("%s API key 仍是占位值，请替换为真实密钥", provider)
+	}
+	return nil
 }

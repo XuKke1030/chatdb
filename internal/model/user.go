@@ -18,3 +18,10 @@ type User struct {
 	LastLoginTme int    `json:"lastLoginTme" orm:"last_login_tme" description:"最后登录时间"` //
 	CreateTime   int    `json:"createTime"   orm:"create_time"    description:"创建时间"`   //
 }
+
+type TopicItem struct {
+	Label      string `json:"label"`
+	Value      string `json:"value"`
+	Permission int    `json:"permission"`
+	Enabled    bool   `json:"enabled"`
+}

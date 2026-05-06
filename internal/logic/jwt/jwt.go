@@ -4,6 +4,7 @@ import (
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -75,10 +76,21 @@ func (s *sJwt) VerifyToken(ctx context.Context, in *model.JWTVerifyTokenInput) (
 
 	// 检查令牌是否有效
 	if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok && parsedToken.Valid {
+		exp, ok := claims["exp"].(float64)
+		if !ok {
+			err = errors.New("invalid token exp claim")
+			return
+		}
+		id, ok := claims["id"].(float64)
+		if !ok {
+			err = errors.New("invalid token id claim")
+			return
+		}
+		jti, _ := claims["jti"].(string)
 		out = &model.JWTVerifyTokenOutput{
-			Expire: int(claims["exp"].(float64)),
-			Id:     int(claims["id"].(float64)),
-			JTI:    claims["jti"].(string),
+			Expire: int(exp),
+			Id:     int(id),
+			JTI:    jti,
 		}
 		valid = true
 	}

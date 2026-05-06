@@ -58,6 +58,13 @@ func (s *sConfig) GetDataBase(ctx context.Context, databaseId int) (db gdb.DB, e
 	return
 }
 
+// InvalidateDataBase 清理指定数据库连接缓存
+func (s *sConfig) InvalidateDataBase(ctx context.Context, databaseId int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	delete(s.dbMap, databaseId)
+}
+
 // GenDataBaseLink 生成数据库连接
 //
 // 格式
@@ -85,7 +92,7 @@ func (s *sConfig) GenDataBaseLink(ctx context.Context, databaseId int) (link str
 			config.Port,
 			config.DbName,
 		)
-	case "pgsql":
+	case "pgsql", "postgres", "postgresql":
 		link = fmt.Sprintf("pgsql:%s:%s@tcp(%s:%d)/%s",
 			config.UserName,
 			config.Password,

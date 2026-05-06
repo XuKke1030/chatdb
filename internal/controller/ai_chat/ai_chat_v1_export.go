@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gogf/gf/v2/frame/g"
 
@@ -20,9 +21,21 @@ func (c *ControllerV1) ExportDownload(ctx context.Context, req *v1.ExportDownloa
 		g.Log().Error(ctx, "file parameter is required")
 		return nil, fmt.Errorf("file parameter is required")
 	}
+	if fileName != filepath.Base(fileName) || strings.Contains(fileName, "..") {
+		g.Log().Warning(ctx, "invalid export file name: "+fileName)
+		return nil, fmt.Errorf("invalid file name")
+	}
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if ext != ".xlsx" && ext != ".json" {
+		return nil, fmt.Errorf("unsupported export file type")
+	}
 
 	// 构建文件路径
-	filePath := filepath.Join("exports", fileName)
+	exportDir, err := filepath.Abs("exports")
+	if err != nil {
+		return nil, err
+	}
+	filePath := filepath.Join(exportDir, fileName)
 
 	// 检查文件是否存在
 	if _, err = os.Stat(filePath); err != nil {
@@ -39,7 +52,11 @@ func (c *ControllerV1) ExportDownload(ctx context.Context, req *v1.ExportDownloa
 
 	// 设置响应头
 	r.Response.Header().Set("Content-Disposition", "attachment; filename="+fileName)
-	r.Response.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	if ext == ".json" {
+		r.Response.Header().Set("Content-Type", "application/json")
+	} else {
+		r.Response.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	}
 	r.Response.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	r.Response.Header().Set("Pragma", "no-cache")
 	r.Response.Header().Set("Expires", "0")

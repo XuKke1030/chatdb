@@ -107,6 +107,11 @@ func (s *sUser) GetUserVerifyCode() (code int) {
 	return
 }
 
+// GetUserInfoById 根据用户ID获取用户信息
+func (s *sUser) GetUserInfoById(ctx context.Context, userId int64) (user *entity.User, err error) {
+	return dao.User.GetUserInfoById(ctx, userId)
+}
+
 // UsernameIsExist 用户名是否存在
 func (s *sUser) UsernameIsExist(ctx context.Context, username string) (exist bool, err error) {
 	count, err := dao.User.Ctx(ctx).Where("username = ?", username).Count()

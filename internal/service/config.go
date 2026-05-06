@@ -25,6 +25,8 @@ type (
 		GenDataBaseLink(ctx context.Context, databaseId int) (link string, err error)
 		// GetJwtOptions 获取JWT配置
 		GetJwtOptions(ctx context.Context, secret string) (option *model.JwtOption, err error)
+		// InvalidateDataBase 清理指定数据库连接缓存
+		InvalidateDataBase(ctx context.Context, databaseId int)
 	}
 )
 

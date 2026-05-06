@@ -1,63 +1,36 @@
 package middleware
 
 import (
-	"ai-chat-sql/internal/code"
+	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 	"context"
-	"net/http"
+	"strings"
 
-	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
-	"github.com/gogf/gf/v2/os/gtime"
-	"github.com/gogf/gf/v2/text/gstr"
 )
 
-// JwtAuth 校验jwt
+// JwtAuth 在开发阶段仍放行所有接口；如果请求带 JWT，则解析用户身份写入上下文，
+// 供主题权限、告警过滤等接口按当前账号返回数据。
 func (s *sMiddleware) JwtAuth(subject string) func(r *ghttp.Request) {
 	return func(r *ghttp.Request) {
-		// 获取当前路由处理函数
-		handler := r.GetServeHandler()
-		// 检查是否有noAuth元数据，如果有且值为true，则跳过验证
-		noAuth := handler.GetMetaTag("noAuth")
-		if noAuth == "true" {
-			r.Middleware.Next()
-			return
-		}
-
 		ctx := r.GetCtx()
-		authorization := r.GetHeader("authorization")
-		token := gstr.Replace(authorization, "Bearer ", "")
-		if token == "" {
-			r.Response.Status = http.StatusUnauthorized
-			r.Response.WriteJsonExit(g.Map{
-				"code":        code.InvalidToken.Code(),
-				"message":     code.InvalidToken.Message(),
-				"serviceTime": gtime.Now().UnixMilli(),
-			})
-		}
-		data, v, err := service.Jwt().VerifyToken(ctx, &model.JWTVerifyTokenInput{
-			Token:   token,
-			Subject: subject,
-		})
+		userId := 0
 
-		if err != nil {
-			r.Response.Status = http.StatusUnauthorized
-			r.Response.WriteJsonExit(g.Map{
-				"code":        code.FailedToRequest.Code(),
-				"message":     code.FailedToRequest.Message(),
-				"serviceTime": gtime.Now().UnixMilli(),
-			})
+		token := strings.TrimSpace(r.Header.Get("Authorization"))
+		token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
+		if token != "" {
+			if out, valid, err := service.Jwt().VerifyToken(ctx, &model.JWTVerifyTokenInput{
+				Token:   token,
+				Subject: subject,
+			}); err == nil && valid && out != nil {
+				userId = out.Id
+			} else if err != nil {
+				consts.Logger.Warningf(ctx, "JWT 解析失败，按未登录用户处理: %s", err.Error())
+			}
 		}
-		if !v {
-			r.Response.Status = http.StatusUnauthorized
-			r.Response.WriteJsonExit(g.Map{
-				"code":        code.InvalidToken.Code(),
-				"message":     code.InvalidToken.Message(),
-				"serviceTime": gtime.Now().UnixMilli(),
-			})
-		}
-		r.SetCtx(context.WithValue(ctx, model.UserGroup{}, data.Id))
+
+		r.SetCtx(context.WithValue(ctx, model.UserGroup{}, userId))
 		r.Middleware.Next()
 	}
 }

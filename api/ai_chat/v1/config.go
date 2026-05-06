@@ -24,7 +24,7 @@ type UpdateDataBaseConfigReq struct {
 	DatabaseId int    `json:"databaseId" v:"required#数据库配置ID不能为空" dc:"数据库配置ID"`
 	DbName     string `json:"dbName" v:"required#数据库名称不能为空" dc:"数据库名称"`
 	UserName   string `json:"userName" v:"required#用户名不能为空" dc:"用户名"`
-	Password   string `json:"password" v:"required#密码不能为空" dc:"密码"`
+	Password   string `json:"password" dc:"密码，为空时不修改"`
 	Host       string `json:"host" v:"required#主机地址不能为空" dc:"主机地址"`
 	Port       int    `json:"port" v:"required#端口号不能为空" dc:"端口号"`
 	DbType     string `json:"dbType" v:"required#数据库类型不能为空" dc:"数据库类型，如: mysql, postgres, sqlite"`

@@ -1,11 +1,13 @@
+//go:build ignore
+
 package main
 
 import (
 	"context"
 	"fmt"
 
-	_ "ai-chat-sql/internal/packed"
 	_ "ai-chat-sql/internal/logic"
+	_ "ai-chat-sql/internal/packed"
 
 	"github.com/gogf/gf/v2/frame/g"
 )

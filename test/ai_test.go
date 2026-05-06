@@ -4,6 +4,7 @@ import (
 	"ai-chat-sql/internal/consts"
 	_ "ai-chat-sql/internal/logic"
 	"ai-chat-sql/internal/service"
+	"os"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -12,7 +13,15 @@ import (
 	"github.com/gogf/gf/v2/test/gtest"
 )
 
+func skipAIIntegrationTest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("RUN_AI_INTEGRATION_TESTS") != "1" {
+		t.Skip("set RUN_AI_INTEGRATION_TESTS=1 to run external AI integration tests")
+	}
+}
+
 func TestAi_OpenAI(t *testing.T) {
+	skipAIIntegrationTest(t)
 	chatModel, err := service.AI().GetChatModel("openai", "")
 	gtest.AssertNil(err)
 	g.DumpWithType(chatModel.Generate(consts.Ctx, []*schema.Message{
@@ -24,6 +33,7 @@ func TestAi_OpenAI(t *testing.T) {
 }
 
 func TestAi_DeepSeek(t *testing.T) {
+	skipAIIntegrationTest(t)
 	chatModel, err := service.AI().GetChatModel("deepseek", "")
 	gtest.AssertNil(err)
 	g.DumpWithType(chatModel.Generate(consts.Ctx, []*schema.Message{
@@ -35,6 +45,7 @@ func TestAi_DeepSeek(t *testing.T) {
 }
 
 func TestAi_GetChatModeListJson(t *testing.T) {
+	skipAIIntegrationTest(t)
 	json, err := service.AI().GetChatModeListJson(consts.Ctx, "openai")
 	gtest.AssertNil(err)
 	g.DumpWithType(json)

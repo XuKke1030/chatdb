@@ -122,7 +122,8 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		in.Prompt = "-"
 	}
 
-	out, err := aiAgent.Stream(ctx, []*schema.Message{
+	// 构建消息列表
+	messages := []*schema.Message{
 		{
 			Role:    schema.System,
 			Content: prompt.GetContent(in.DatabaseId, dbTypeT.String()),
@@ -131,11 +132,26 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 			Role:    schema.System,
 			Content: in.Prompt,
 		},
-		{
-			Role:    schema.User,
-			Content: in.Message,
-		},
+	}
+
+	// 如果指定了主题，加载对应的主题 prompt 作为补充系统提示
+	if in.Topic != "" {
+		topicPrompt, promptErr := service.Prompt().GetPrompt(ctx, in.Topic)
+		if promptErr == nil && topicPrompt != nil {
+			messages = append(messages, &schema.Message{
+				Role:    schema.System,
+				Content: topicPrompt.Content,
+			})
+		}
+	}
+
+	// 添加用户消息
+	messages = append(messages, &schema.Message{
+		Role:    schema.User,
+		Content: in.Message,
 	})
+
+	out, err := aiAgent.Stream(ctx, messages)
 	if err != nil {
 		cancel()
 		return

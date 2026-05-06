@@ -46,6 +46,8 @@ type (
 		TimestampToDateTime(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
 		// GetCalendarDays 获取指定年月的每一天日期
 		GetCalendarDays(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
+		// RecognizeVehiclePlate 识别车牌来源、地区和港澳车辆类型
+		RecognizeVehiclePlate(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
 	}
 )
 
