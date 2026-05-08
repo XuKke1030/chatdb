@@ -1,11 +1,12 @@
 package model
 
 type ConfigData struct {
-	Server   *ServerConfig `json:"server"`
-	AiConfig *AiConfig     `json:"ai"`
-	QaConfig *QaConfig     `json:"qa"`
-	Jwt      []*JwtOption  `json:"jwt" dc:"JWT配置"`
-	DbConfig *DbConfig     `json:"db" dc:"数据库配置"`
+	Server   *ServerConfig  `json:"server"`
+	AiConfig *AiConfig      `json:"ai"`
+	QaConfig *QaConfig      `json:"qa"`
+	Jwt      []*JwtOption   `json:"jwt" dc:"JWT配置"`
+	DbConfig *DbConfig      `json:"db" dc:"数据库配置"`
+	Traffic  *TrafficConfig `json:"traffic"`
 }
 
 // ServerConfig 服务配置
@@ -76,4 +77,25 @@ type QaAidgpConfig struct {
 // DbConfig 数据库配置
 type DbConfig struct {
 	Readonly bool `json:"readonly" dc:"是否启用只读模式，启用后只允许执行查询操作（SELECT语句）"`
+}
+
+type TrafficConfig struct {
+	Mqtt   *TrafficMqttConfig   `json:"mqtt"`
+	Ingest *TrafficIngestConfig `json:"ingest"`
+}
+
+type TrafficMqttConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Broker         string `json:"broker"`
+	Topic          string `json:"topic"`
+	ClientIdPrefix string `json:"clientIdPrefix"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	Qos            int    `json:"qos"`
+}
+
+type TrafficIngestConfig struct {
+	DedupeWindowDays     int `json:"dedupeWindowDays"`
+	RawPayloadRetainDays int `json:"rawPayloadRetainDays"`
+	NoDataWarnMinutes    int `json:"noDataWarnMinutes"`
 }

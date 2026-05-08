@@ -31,6 +31,7 @@ require (
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.7 // indirect
 	github.com/cohesion-org/deepseek-go v1.3.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/eclipse/paho.mqtt.golang v1.5.0 // indirect
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/emirpasic/gods/v2 v2.0.0-alpha // indirect
 	github.com/evanphx/json-patch v0.5.2 // indirect
@@ -89,6 +90,7 @@ require (
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/exp v0.0.0-20251125195548-87e1e737ad39 // indirect
 	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

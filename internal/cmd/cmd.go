@@ -5,6 +5,7 @@ import (
 	"ai-chat-sql/internal/controller/admin"
 	"ai-chat-sql/internal/controller/ai_chat"
 	"ai-chat-sql/internal/controller/qa"
+	"ai-chat-sql/internal/controller/traffic"
 	"ai-chat-sql/internal/controller/user"
 	"ai-chat-sql/internal/packed"
 	"ai-chat-sql/internal/service"
@@ -24,6 +25,7 @@ var (
 			if err = packed.CheckDatabase(ctx); err != nil {
 				return err
 			}
+			service.Traffic().StartMqttSubscriber(ctx)
 			s := g.Server()
 			s.Group("/api/v1", func(group *ghttp.RouterGroup) {
 				group.Middleware(service.Middleware().HandlerResponse, ghttp.MiddlewareCORS)
@@ -31,7 +33,7 @@ var (
 				{
 					authGroup := group.Clone()
 					authGroup.Middleware(service.Middleware().JwtAuth(consts.JwtSubjectUser)).
-						Bind(ai_chat.NewV1(), user.NewV1(), admin.NewV1(), qa.NewV1())
+						Bind(ai_chat.NewV1(), user.NewV1(), admin.NewV1(), qa.NewV1(), traffic.NewV1())
 				}
 			})
 			s.Run()

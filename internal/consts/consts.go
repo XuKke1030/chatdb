@@ -84,6 +84,15 @@ func applyEnvOverrides() {
 	if Config.DbConfig == nil {
 		Config.DbConfig = &model.DbConfig{}
 	}
+	if Config.Traffic == nil {
+		Config.Traffic = &model.TrafficConfig{}
+	}
+	if Config.Traffic.Mqtt == nil {
+		Config.Traffic.Mqtt = &model.TrafficMqttConfig{}
+	}
+	if Config.Traffic.Ingest == nil {
+		Config.Traffic.Ingest = &model.TrafficIngestConfig{}
+	}
 
 	setStringFromEnv(&Config.Server.Address, "CHATDB_SERVER_ADDRESS")
 	setStringFromEnv(&Config.Server.Mode, "CHATDB_SERVER_MODE")
@@ -102,6 +111,11 @@ func applyEnvOverrides() {
 	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.BaseUrl, "CHATDB_QA_AIDGP_BASE_URL")
 	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.AppKey, "CHATDB_QA_AIDGP_APP_KEY")
 	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.AppSecret, "CHATDB_QA_AIDGP_APP_SECRET")
+	setStringFromEnv(&Config.Traffic.Mqtt.Broker, "CHATDB_TRAFFIC_MQTT_BROKER")
+	setStringFromEnv(&Config.Traffic.Mqtt.Topic, "CHATDB_TRAFFIC_MQTT_TOPIC")
+	setStringFromEnv(&Config.Traffic.Mqtt.ClientIdPrefix, "CHATDB_TRAFFIC_MQTT_CLIENT_ID_PREFIX")
+	setStringFromEnv(&Config.Traffic.Mqtt.Username, "CHATDB_TRAFFIC_MQTT_USERNAME")
+	setStringFromEnv(&Config.Traffic.Mqtt.Password, "CHATDB_TRAFFIC_MQTT_PASSWORD")
 
 	if enabled := os.Getenv("CHATDB_QA_WEB_SEARCH_ENABLED"); enabled != "" {
 		if v, err := strconv.ParseBool(enabled); err == nil {
@@ -112,6 +126,31 @@ func applyEnvOverrides() {
 	if readonly := os.Getenv("CHATDB_DB_READONLY"); readonly != "" {
 		if v, err := strconv.ParseBool(readonly); err == nil {
 			Config.DbConfig.Readonly = v
+		}
+	}
+	if enabled := os.Getenv("CHATDB_TRAFFIC_MQTT_ENABLED"); enabled != "" {
+		if v, err := strconv.ParseBool(enabled); err == nil {
+			Config.Traffic.Mqtt.Enabled = v
+		}
+	}
+	if qos := os.Getenv("CHATDB_TRAFFIC_MQTT_QOS"); qos != "" {
+		if v, err := strconv.Atoi(qos); err == nil {
+			Config.Traffic.Mqtt.Qos = v
+		}
+	}
+	if days := os.Getenv("CHATDB_TRAFFIC_DEDUPE_WINDOW_DAYS"); days != "" {
+		if v, err := strconv.Atoi(days); err == nil {
+			Config.Traffic.Ingest.DedupeWindowDays = v
+		}
+	}
+	if days := os.Getenv("CHATDB_TRAFFIC_RAW_PAYLOAD_RETAIN_DAYS"); days != "" {
+		if v, err := strconv.Atoi(days); err == nil {
+			Config.Traffic.Ingest.RawPayloadRetainDays = v
+		}
+	}
+	if minutes := os.Getenv("CHATDB_TRAFFIC_NO_DATA_WARN_MINUTES"); minutes != "" {
+		if v, err := strconv.Atoi(minutes); err == nil {
+			Config.Traffic.Ingest.NoDataWarnMinutes = v
 		}
 	}
 

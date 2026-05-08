@@ -27,6 +27,20 @@ jwt:
 db:
   readonly: false
 
+traffic:
+  mqtt:
+    enabled: false
+    broker: "tcp://iot-mqtt.qi-cloud.com:1883"
+    topic: "zh-iot-jinshan-kakou"
+    clientIdPrefix: "jinshan_"
+    username: "jinshan"
+    password: ""
+    qos: 1
+  ingest:
+    dedupeWindowDays: 7
+    rawPayloadRetainDays: 30
+    noDataWarnMinutes: 30
+
 qa:
   webSearch:
     enabled: false
