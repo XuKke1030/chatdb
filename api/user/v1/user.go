@@ -30,6 +30,9 @@ type UserPermissionsReq struct {
 }
 
 type UserPermissionsRes struct {
+	Authenticated bool                      `json:"authenticated"`
+	UserId        int64                     `json:"userId,omitempty"`
+	Username      string                    `json:"username,omitempty"`
 	RuleLevel     int                       `json:"ruleLevel"`
 	Permissions   []model.TopicItem         `json:"permissions"`
 	QaPermissions []UserKnowledgePermission `json:"qaPermissions"`

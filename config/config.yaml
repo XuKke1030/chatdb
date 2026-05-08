@@ -13,6 +13,10 @@ ai:
     key: "sk-e11af6f5a4aa41bf8eabff127c22b8dc"
   mcp:
     address: ":9000"
+  asr:
+    baseUrl: ""
+    key: ""
+    model: "whisper-1"
 
 jwt:
   - subject: "ai-chat-user"
@@ -22,6 +26,19 @@ jwt:
 
 db:
   readonly: false
+
+qa:
+  webSearch:
+    enabled: false
+    provider: "local"
+    baseUrl: ""
+    key: ""
+  sync:
+    provider: "local" # local | aidgp
+    aidgp:
+      baseUrl: ""
+      appKey: ""
+      appSecret: ""
 
 database:
   master:

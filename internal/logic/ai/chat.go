@@ -41,6 +41,9 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	// 发送开始包
 	if err = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 		Event: "start",
+		Data: g.Map{
+			"sessionId": in.SessionId,
+		},
 	}, respChan); err != nil {
 		return
 	}
@@ -143,6 +146,20 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 				Content: topicPrompt.Content,
 			})
 		}
+	}
+
+	for _, item := range in.History {
+		if item.Content == "" {
+			continue
+		}
+		role := schema.User
+		if item.Role == "assistant" {
+			role = schema.Assistant
+		}
+		messages = append(messages, &schema.Message{
+			Role:    role,
+			Content: item.Content,
+		})
 	}
 
 	// 添加用户消息

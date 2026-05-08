@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"strings"
 
 	v1 "ai-chat-sql/api/user/v1"
 	"ai-chat-sql/internal/model"
@@ -60,15 +61,18 @@ func (c *ControllerV1) UserRegister(ctx context.Context, req *v1.UserRegisterReq
 func (c *ControllerV1) UserPermissions(ctx context.Context, req *v1.UserPermissionsReq) (res *v1.UserPermissionsRes, err error) {
 	userId := currentUserId(ctx)
 	if userId <= 0 {
-		return &v1.UserPermissionsRes{RuleLevel: 0, Permissions: topicItemsFromRuleLevel(0, false), QaPermissions: knowledgePermissionsForUser(ctx, 0, false)}, nil
+		return &v1.UserPermissionsRes{Authenticated: false, RuleLevel: 0, Permissions: topicItemsFromRuleLevel(0, false), QaPermissions: knowledgePermissionsForUser(ctx, 0, false)}, nil
 	}
 
 	user, err := service.User().GetUserInfoById(ctx, userId)
 	if err != nil || user == nil {
-		return &v1.UserPermissionsRes{RuleLevel: 0, Permissions: topicItemsFromRuleLevel(0, false), QaPermissions: knowledgePermissionsForUser(ctx, 0, false)}, nil
+		return &v1.UserPermissionsRes{Authenticated: false, RuleLevel: 0, Permissions: topicItemsFromRuleLevel(0, false), QaPermissions: knowledgePermissionsForUser(ctx, 0, false)}, nil
 	}
 	ruleLevel := effectiveRuleLevel(ctx, userId, user.RuleLevel)
 	return &v1.UserPermissionsRes{
+		Authenticated: true,
+		UserId:        userId,
+		Username:      user.Username,
 		RuleLevel:     ruleLevel,
 		Permissions:   topicItemsFromRuleLevel(ruleLevel, false),
 		QaPermissions: knowledgePermissionsForUser(ctx, userId, false),
@@ -99,7 +103,7 @@ func (c *ControllerV1) UserTopics(ctx context.Context, req *v1.UserTopicsReq) (r
 }
 
 func (c *ControllerV1) UserKnowledgeBases(ctx context.Context, req *v1.UserKnowledgeBasesReq) (res *v1.UserKnowledgeBasesRes, err error) {
-	return &v1.UserKnowledgeBasesRes{List: knowledgePermissionsForUser(ctx, 0, true)}, nil
+	return &v1.UserKnowledgeBasesRes{List: knowledgePermissionsForUser(ctx, currentUserId(ctx), true)}, nil
 }
 
 func (c *ControllerV1) UserPopularQuestions(ctx context.Context, req *v1.UserPopularQuestionsReq) (res *v1.UserPopularQuestionsRes, err error) {
@@ -172,14 +176,17 @@ func topicItemsFromRuleLevel(ruleLevel int, enabledOnly bool) []model.TopicItem 
 }
 
 func knowledgePermissionsForUser(ctx context.Context, userId int64, enabledOnly bool) []v1.UserKnowledgePermission {
-	bases, err := g.DB("master").Model("admin_knowledge_base").Ctx(ctx).Where("enabled = ?", 1).OrderAsc("sort").All()
+	bases, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).Where("enabled = ?", 1).OrderAsc("sort").All()
 	if err != nil {
 		return []v1.UserKnowledgePermission{}
 	}
 
 	enabledByCode := make(map[string]bool, len(bases))
-	for _, base := range bases {
-		enabledByCode[base["code"].String()] = true
+	if userId > 0 {
+		perms, _ := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Where("user_id = ?", userId).All()
+		for _, perm := range perms {
+			enabledByCode[normalizeQaKnowledgeCode(perm["knowledge_code"].String())] = perm["enabled"].Int() != 0
+		}
 	}
 
 	list := make([]v1.UserKnowledgePermission, 0, len(bases))
@@ -196,6 +203,17 @@ func knowledgePermissionsForUser(ctx context.Context, userId int64, enabledOnly 
 		list = append(list, item)
 	}
 	return list
+}
+
+func normalizeQaKnowledgeCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "policy_files":
+		return "policy"
+	case "laws":
+		return "manual"
+	default:
+		return strings.TrimSpace(code)
+	}
 }
 
 func effectiveRuleLevel(ctx context.Context, userId int64, fallback int) int {

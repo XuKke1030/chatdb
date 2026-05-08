@@ -3,6 +3,7 @@ package model
 type ConfigData struct {
 	Server   *ServerConfig `json:"server"`
 	AiConfig *AiConfig     `json:"ai"`
+	QaConfig *QaConfig     `json:"qa"`
 	Jwt      []*JwtOption  `json:"jwt" dc:"JWT配置"`
 	DbConfig *DbConfig     `json:"db" dc:"数据库配置"`
 }
@@ -26,6 +27,7 @@ type AiConfig struct {
 	OpenAI   *OpenAIConfig   `json:"openai"`
 	DeepSeek *DeepSeekConfig `json:"deepseek"`
 	Mcp      *McpConfig      `json:"mcp"`
+	Asr      *AsrConfig      `json:"asr"`
 }
 
 type OpenAIConfig struct {
@@ -40,6 +42,35 @@ type DeepSeekConfig struct {
 
 type McpConfig struct {
 	Address string `json:"address"`
+}
+
+type AsrConfig struct {
+	BaseUrl string `json:"baseUrl"`
+	Key     string `json:"key"`
+	Model   string `json:"model"`
+}
+
+type QaConfig struct {
+	WebSearch *QaWebSearchConfig `json:"webSearch"`
+	Sync      *QaSyncConfig      `json:"sync"`
+}
+
+type QaWebSearchConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider"`
+	BaseUrl  string `json:"baseUrl"`
+	Key      string `json:"key"`
+}
+
+type QaSyncConfig struct {
+	Provider string         `json:"provider"`
+	Aidgp    *QaAidgpConfig `json:"aidgp"`
+}
+
+type QaAidgpConfig struct {
+	BaseUrl   string `json:"baseUrl"`
+	AppKey    string `json:"appKey"`
+	AppSecret string `json:"appSecret"`
 }
 
 // DbConfig 数据库配置

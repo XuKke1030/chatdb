@@ -893,14 +893,14 @@ func ensureDefaultKnowledgePermissions(ctx context.Context, userId int, ruleLeve
 	if err != nil || count > 0 {
 		return err
 	}
-	bases, err := g.DB("master").Model("admin_knowledge_base").Ctx(ctx).Fields("code").Where("enabled = ?", 1).OrderAsc("sort").All()
+	bases, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).Fields("code").Where("enabled = ?", 1).OrderAsc("sort").All()
 	if err != nil {
 		return err
 	}
 	now := int(gtime.Timestamp())
 	for _, base := range bases {
 		code := base["code"].String()
-		allowed := enabled && (code == "policy_files" || (ruleLevel&7 == 7 && code == "laws"))
+		allowed := enabled && (code == "policy" || (ruleLevel&7 == 7 && code == "manual"))
 		if _, err := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Data(g.Map{
 			"user_id":        userId,
 			"knowledge_code": code,
@@ -915,14 +915,14 @@ func ensureDefaultKnowledgePermissions(ctx context.Context, userId int, ruleLeve
 }
 
 func knowledgePermissionsForUser(ctx context.Context, userId int) []v1.KnowledgePermission {
-	bases, err := g.DB("master").Model("admin_knowledge_base").Ctx(ctx).Where("enabled = ?", 1).OrderAsc("sort").All()
+	bases, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).Where("enabled = ?", 1).OrderAsc("sort").All()
 	if err != nil {
 		return []v1.KnowledgePermission{}
 	}
 	perms, _ := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Where("user_id = ?", userId).All()
 	enabledByCode := make(map[string]bool, len(perms))
 	for _, perm := range perms {
-		enabledByCode[perm["knowledge_code"].String()] = perm["enabled"].Int() != 0
+		enabledByCode[normalizeQaKnowledgeCode(perm["knowledge_code"].String())] = perm["enabled"].Int() != 0
 	}
 	list := make([]v1.KnowledgePermission, 0, len(bases))
 	for _, base := range bases {
@@ -936,8 +936,19 @@ func knowledgePermissionsForUser(ctx context.Context, userId int) []v1.Knowledge
 	return list
 }
 
+func normalizeQaKnowledgeCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "policy_files":
+		return "policy"
+	case "laws":
+		return "manual"
+	default:
+		return strings.TrimSpace(code)
+	}
+}
+
 func knowledgeBaseOptions(ctx context.Context) []v1.KnowledgePermission {
-	bases, err := g.DB("master").Model("admin_knowledge_base").Ctx(ctx).Where("enabled = ?", 1).OrderAsc("sort").All()
+	bases, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).Where("enabled = ?", 1).OrderAsc("sort").All()
 	if err != nil {
 		return []v1.KnowledgePermission{}
 	}

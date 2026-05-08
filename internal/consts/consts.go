@@ -66,6 +66,21 @@ func applyEnvOverrides() {
 	if Config.AiConfig.Mcp == nil {
 		Config.AiConfig.Mcp = &model.McpConfig{}
 	}
+	if Config.AiConfig.Asr == nil {
+		Config.AiConfig.Asr = &model.AsrConfig{}
+	}
+	if Config.QaConfig == nil {
+		Config.QaConfig = &model.QaConfig{}
+	}
+	if Config.QaConfig.WebSearch == nil {
+		Config.QaConfig.WebSearch = &model.QaWebSearchConfig{}
+	}
+	if Config.QaConfig.Sync == nil {
+		Config.QaConfig.Sync = &model.QaSyncConfig{}
+	}
+	if Config.QaConfig.Sync.Aidgp == nil {
+		Config.QaConfig.Sync.Aidgp = &model.QaAidgpConfig{}
+	}
 	if Config.DbConfig == nil {
 		Config.DbConfig = &model.DbConfig{}
 	}
@@ -77,6 +92,22 @@ func applyEnvOverrides() {
 	setStringFromEnv(&Config.AiConfig.DeepSeek.BaseUrl, "CHATDB_DEEPSEEK_BASE_URL")
 	setStringFromEnv(&Config.AiConfig.DeepSeek.Key, "CHATDB_DEEPSEEK_KEY")
 	setStringFromEnv(&Config.AiConfig.Mcp.Address, "CHATDB_MCP_ADDRESS")
+	setStringFromEnv(&Config.AiConfig.Asr.BaseUrl, "CHATDB_ASR_BASE_URL")
+	setStringFromEnv(&Config.AiConfig.Asr.Key, "CHATDB_ASR_KEY")
+	setStringFromEnv(&Config.AiConfig.Asr.Model, "CHATDB_ASR_MODEL")
+	setStringFromEnv(&Config.QaConfig.WebSearch.Provider, "CHATDB_QA_WEB_SEARCH_PROVIDER")
+	setStringFromEnv(&Config.QaConfig.WebSearch.BaseUrl, "CHATDB_QA_WEB_SEARCH_BASE_URL")
+	setStringFromEnv(&Config.QaConfig.WebSearch.Key, "CHATDB_QA_WEB_SEARCH_KEY")
+	setStringFromEnv(&Config.QaConfig.Sync.Provider, "CHATDB_QA_SYNC_PROVIDER")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.BaseUrl, "CHATDB_QA_AIDGP_BASE_URL")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.AppKey, "CHATDB_QA_AIDGP_APP_KEY")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.AppSecret, "CHATDB_QA_AIDGP_APP_SECRET")
+
+	if enabled := os.Getenv("CHATDB_QA_WEB_SEARCH_ENABLED"); enabled != "" {
+		if v, err := strconv.ParseBool(enabled); err == nil {
+			Config.QaConfig.WebSearch.Enabled = v
+		}
+	}
 
 	if readonly := os.Getenv("CHATDB_DB_READONLY"); readonly != "" {
 		if v, err := strconv.ParseBool(readonly); err == nil {
