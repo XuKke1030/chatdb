@@ -70,7 +70,6 @@ func (s *sConfig) InvalidateDataBase(ctx context.Context, databaseId int) {
 // 格式
 // mysql:root:12345678@tcp(127.0.0.1:3306)/test?loc=Local&parseTime=true
 // pgsql:root:12345678@tcp(127.0.0.1:5432)/test
-// sqlite::@file(/var/data/db.sqlite3)
 func (s *sConfig) GenDataBaseLink(ctx context.Context, databaseId int) (link string, err error) {
 	// 根据数据库ID查询配置信息
 	var config *entity.DatabaseConf
@@ -100,8 +99,6 @@ func (s *sConfig) GenDataBaseLink(ctx context.Context, databaseId int) (link str
 			config.Port,
 			config.DbName,
 		)
-	case "sqlite":
-		link = fmt.Sprintf("sqlite::@file(%s)", config.DbName)
 	default:
 		return "", fmt.Errorf("不支持的数据库类型: %s", config.DbType)
 	}

@@ -25,10 +25,13 @@ var (
 			if err = packed.CheckDatabase(ctx); err != nil {
 				return err
 			}
+			if err = service.SystemInit().InitDB(ctx); err != nil {
+				return err
+			}
 			service.Traffic().StartMqttSubscriber(ctx)
 			s := g.Server()
 			s.Group("/api/v1", func(group *ghttp.RouterGroup) {
-				group.Middleware(service.Middleware().HandlerResponse, ghttp.MiddlewareCORS)
+				group.Middleware(service.Middleware().RequestMetrics, service.Middleware().HandlerResponse, ghttp.MiddlewareCORS)
 
 				{
 					authGroup := group.Clone()

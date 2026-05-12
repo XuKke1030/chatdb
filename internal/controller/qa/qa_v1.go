@@ -9,10 +9,12 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	v1 "ai-chat-sql/api/qa/v1"
 	"ai-chat-sql/internal/consts"
+	"ai-chat-sql/internal/logic/aidgp"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 
@@ -25,9 +27,6 @@ import (
 )
 
 func (c *ControllerV1) KnowledgeBases(ctx context.Context, req *v1.KnowledgeBasesReq) (res *v1.KnowledgeBasesRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	records, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
 		Where("enabled = ?", 1).
@@ -36,10 +35,13 @@ func (c *ControllerV1) KnowledgeBases(ctx context.Context, req *v1.KnowledgeBase
 	if err != nil {
 		return nil, err
 	}
+
+	adminScoped, adminHasPerm, adminEnabled, qaAllowed := batchKnowledgePermissions(ctx, userId)
+
 	list := make([]v1.KnowledgeBaseItem, 0, len(records))
 	for _, record := range records {
 		code := record["code"].String()
-		if !canAccessKnowledgeBase(ctx, userId, code) {
+		if !checkKnowledgeAccess(code, adminScoped, adminHasPerm, adminEnabled, qaAllowed) {
 			continue
 		}
 		list = append(list, v1.KnowledgeBaseItem{
@@ -56,9 +58,6 @@ func (c *ControllerV1) KnowledgeBases(ctx context.Context, req *v1.KnowledgeBase
 }
 
 func (c *ControllerV1) Retrieve(ctx context.Context, req *v1.RetrieveReq) (res *v1.RetrieveRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -82,9 +81,15 @@ func (c *ControllerV1) Retrieve(ctx context.Context, req *v1.RetrieveReq) (res *
 }
 
 func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
+	totalStart := time.Now()
+	stageStart := totalStart
+	logStage := func(stage string) {
+		consts.Logger.Infof(ctx, "perf qa_chat stage=%s knowledgeCode=%s sessionId=%s costMs=%d totalMs=%d", stage, strings.TrimSpace(req.KnowledgeCode), strings.TrimSpace(req.SessionId), time.Since(stageStart).Milliseconds(), time.Since(totalStart).Milliseconds())
+		stageStart = time.Now()
 	}
+	defer func() {
+		consts.Logger.Infof(ctx, "perf qa_chat stage=total knowledgeCode=%s sessionId=%s costMs=%d", strings.TrimSpace(req.KnowledgeCode), strings.TrimSpace(req.SessionId), time.Since(totalStart).Milliseconds())
+	}()
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -105,29 +110,36 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	if err != nil {
 		return nil, err
 	}
+	logStage("retrieval")
 	sessionId, err := ensureQaSession(ctx, userId, strings.TrimSpace(req.SessionId), knowledgeCode, message)
 	if err != nil {
 		return nil, err
 	}
+	req.SessionId = sessionId
+	logStage("session")
 	storedHistory, err := loadQaSessionHistory(ctx, userId, sessionId, 12)
 	if err != nil {
 		return nil, err
 	}
 	history := mergeQaHistory(storedHistory, req.History)
+	logStage("history")
 	if _, err = appendQaMessage(ctx, userId, sessionId, knowledgeCode, "user", message); err != nil {
 		return nil, err
 	}
+	logStage("save_user_message")
 	if err = upsertQaQuestionStat(ctx, userId, knowledgeCode, message); err != nil {
 		consts.Logger.Errorf(ctx, "更新问答热门问题统计失败: %s", err.Error())
 	}
+	logStage("question_stat")
 	citations, err := createQaCitations(ctx, userId, sessionId, items)
 	if err != nil {
 		return nil, err
 	}
+	logStage("citation")
 
 	respChan := make(chan any)
 	g.Go(ctx, func(ctx context.Context) {
-		streamQaChat(ctx, req, userId, sessionId, knowledgeCode, message, history, items, citations, respChan)
+		streamQaChat(ctx, req, userId, sessionId, knowledgeCode, message, history, items, citations, respChan, totalStart)
 	}, func(ctx context.Context, exception error) {
 		close(respChan)
 		consts.Logger.Error(ctx, exception)
@@ -137,6 +149,7 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	r.Response.Header().Set("Content-Type", "text/event-stream")
 	r.Response.Header().Set("Cache-Control", "no-cache")
 	r.Response.Header().Set("Connection", "keep-alive")
+	logStage("first_sse_ready")
 
 	var jsonData []byte
 	for v := range respChan {
@@ -151,9 +164,6 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 }
 
 func (c *ControllerV1) CitationDetail(ctx context.Context, req *v1.CitationDetailReq) (res *v1.CitationDetailRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -205,9 +215,6 @@ func (c *ControllerV1) CitationDetail(ctx context.Context, req *v1.CitationDetai
 }
 
 func (c *ControllerV1) DocumentView(ctx context.Context, req *v1.DocumentViewReq) (res *v1.DocumentViewRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -250,9 +257,6 @@ func (c *ControllerV1) DocumentView(ctx context.Context, req *v1.DocumentViewReq
 }
 
 func (c *ControllerV1) PopularQuestions(ctx context.Context, req *v1.PopularQuestionsReq) (res *v1.PopularQuestionsRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -327,9 +331,6 @@ func (c *ControllerV1) PopularQuestions(ctx context.Context, req *v1.PopularQues
 }
 
 func (c *ControllerV1) WebSearch(ctx context.Context, req *v1.WebSearchReq) (res *v1.WebSearchRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -401,21 +402,30 @@ func qaWebSearchResult(ctx context.Context, query string, knowledgeCode string, 
 }
 
 func (c *ControllerV1) SyncKnowledgeBases(ctx context.Context, req *v1.QaSyncReq) (res *v1.QaSyncRes, err error) {
-	return createQaSyncPlaceholder(ctx, "knowledge_bases", "")
+	return executeQaSync(ctx, aidgp.SyncKnowledgeBases, "")
 }
 
 func (c *ControllerV1) SyncDocuments(ctx context.Context, req *v1.QaSyncDocumentsReq) (res *v1.QaSyncRes, err error) {
-	return createQaSyncPlaceholder(ctx, "documents", strings.TrimSpace(req.KnowledgeCode))
+	return executeQaSync(ctx, aidgp.SyncDocuments, strings.TrimSpace(req.KnowledgeCode))
 }
 
 func (c *ControllerV1) SyncPermissions(ctx context.Context, req *v1.QaSyncPermissionsReq) (res *v1.QaSyncRes, err error) {
-	return createQaSyncPlaceholder(ctx, "permissions", strings.TrimSpace(req.KnowledgeCode))
+	return executeQaSync(ctx, aidgp.SyncPermissions, strings.TrimSpace(req.KnowledgeCode))
+}
+
+func (c *ControllerV1) SyncGridData(ctx context.Context, req *v1.QaSyncGridDataReq) (res *v1.QaSyncRes, err error) {
+	return executeQaSync(ctx, aidgp.SyncGridData, "")
+}
+
+func (c *ControllerV1) SyncTrafficData(ctx context.Context, req *v1.QaSyncTrafficDataReq) (res *v1.QaSyncRes, err error) {
+	return executeQaSync(ctx, aidgp.SyncTrafficData, "")
+}
+
+func (c *ControllerV1) SyncPopulationData(ctx context.Context, req *v1.QaSyncPopulationDataReq) (res *v1.QaSyncRes, err error) {
+	return executeQaSync(ctx, aidgp.SyncPopulationData, "")
 }
 
 func (c *ControllerV1) SyncStatus(ctx context.Context, req *v1.QaSyncStatusReq) (res *v1.QaSyncStatusRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -432,7 +442,7 @@ func (c *ControllerV1) SyncStatus(ctx context.Context, req *v1.QaSyncStatusReq) 
 		provider = qaSyncProvider()
 	}
 	query := g.DB("master").Model("qa_sync_task").Ctx(ctx).
-		Fields("id, provider, sync_type, status, message, create_time, update_time")
+		Fields("id, provider, sync_type, status, message, success_count, failure_count, skipped_count, started_at, finished_at, create_time, update_time")
 	if provider != "" {
 		query = query.Where("provider = ?", provider)
 	}
@@ -446,13 +456,18 @@ func (c *ControllerV1) SyncStatus(ctx context.Context, req *v1.QaSyncStatusReq) 
 	list := make([]v1.QaSyncTaskItem, 0, len(records))
 	for _, record := range records {
 		list = append(list, v1.QaSyncTaskItem{
-			TaskId:     record["id"].Int64(),
-			Provider:   record["provider"].String(),
-			SyncType:   record["sync_type"].String(),
-			Status:     record["status"].String(),
-			Message:    record["message"].String(),
-			CreateTime: record["create_time"].Int(),
-			UpdateTime: record["update_time"].Int(),
+			TaskId:       record["id"].Int64(),
+			Provider:     record["provider"].String(),
+			SyncType:     record["sync_type"].String(),
+			Status:       record["status"].String(),
+			Message:      record["message"].String(),
+			SuccessCount: record["success_count"].Int(),
+			FailureCount: record["failure_count"].Int(),
+			SkippedCount: record["skipped_count"].Int(),
+			StartedAt:    record["started_at"].Int(),
+			FinishedAt:   record["finished_at"].Int(),
+			CreateTime:   record["create_time"].Int(),
+			UpdateTime:   record["update_time"].Int(),
 		})
 	}
 	return &v1.QaSyncStatusRes{
@@ -462,10 +477,47 @@ func (c *ControllerV1) SyncStatus(ctx context.Context, req *v1.QaSyncStatusReq) 
 	}, nil
 }
 
-func (c *ControllerV1) SessionReset(ctx context.Context, req *v1.SessionResetReq) (res *v1.SessionResetRes, err error) {
-	if err = ensureQaTables(ctx); err != nil {
+func (c *ControllerV1) SyncLogs(ctx context.Context, req *v1.QaSyncLogsReq) (res *v1.QaSyncLogsRes, err error) {
+	userId := currentUserId(ctx)
+	if userId <= 0 {
+		return nil, gerror.New("用户未登录")
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	query := g.DB("master").Model("qa_sync_log").Ctx(ctx).
+		Fields("id, task_id, provider, sync_type, external_id, local_id, action, status, message, create_time").
+		Where("task_id = ?", req.TaskId)
+	if status := strings.TrimSpace(req.Status); status != "" {
+		query = query.Where("status = ?", status)
+	}
+	records, err := query.OrderAsc("id").Limit(limit).All()
+	if err != nil {
 		return nil, err
 	}
+	list := make([]v1.QaSyncLogItem, 0, len(records))
+	for _, record := range records {
+		list = append(list, v1.QaSyncLogItem{
+			LogId:      record["id"].Int64(),
+			TaskId:     record["task_id"].Int64(),
+			Provider:   record["provider"].String(),
+			SyncType:   record["sync_type"].String(),
+			ExternalId: record["external_id"].String(),
+			LocalId:    record["local_id"].String(),
+			Action:     record["action"].String(),
+			Status:     record["status"].String(),
+			Message:    record["message"].String(),
+			CreateTime: record["create_time"].Int(),
+		})
+	}
+	return &v1.QaSyncLogsRes{TaskId: req.TaskId, List: list}, nil
+}
+
+func (c *ControllerV1) SessionReset(ctx context.Context, req *v1.SessionResetReq) (res *v1.SessionResetRes, err error) {
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -514,7 +566,16 @@ type qaCitationEvent struct {
 	SourceProvider string
 }
 
-func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId string, knowledgeCode string, question string, history []model.ChatHistoryItem, items []v1.RetrieveItem, citations []qaCitationEvent, respChan chan any) {
+func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId string, knowledgeCode string, question string, history []model.ChatHistoryItem, items []v1.RetrieveItem, citations []qaCitationEvent, respChan chan any, requestStart time.Time) {
+	totalStart := time.Now()
+	stageStart := totalStart
+	logStage := func(stage string) {
+		consts.Logger.Infof(ctx, "perf qa_stream stage=%s knowledgeCode=%s sessionId=%s costMs=%d streamMs=%d requestMs=%d", stage, knowledgeCode, sessionId, time.Since(stageStart).Milliseconds(), time.Since(totalStart).Milliseconds(), time.Since(requestStart).Milliseconds())
+		stageStart = time.Now()
+	}
+	defer func() {
+		consts.Logger.Infof(ctx, "perf qa_stream stage=total knowledgeCode=%s sessionId=%s costMs=%d requestMs=%d", knowledgeCode, sessionId, time.Since(totalStart).Milliseconds(), time.Since(requestStart).Milliseconds())
+	}()
 	defer close(respChan)
 	if err := model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 		Event: "start",
@@ -524,12 +585,14 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 	}, respChan); err != nil {
 		return
 	}
+	logStage("send_start")
 	_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 		Event: "retrieval",
 		Data: g.Map{
 			"list": items,
 		},
 	}, respChan)
+	logStage("send_retrieval")
 	var webItems []v1.WebSearchItem
 	if req.WebSearch {
 		webResult := qaWebSearchResult(ctx, question, knowledgeCode, 5)
@@ -539,6 +602,7 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 			Data:  webResult,
 		}, respChan)
 	}
+	logStage("web_search")
 	if req.DeepThinking {
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event: "thinking",
@@ -553,6 +617,7 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 			},
 		}, respChan)
 	}
+	logStage("thinking")
 	for _, citation := range citations {
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event: "citation",
@@ -572,6 +637,7 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 			},
 		}, respChan)
 	}
+	logStage("send_citations")
 
 	aiProvider := strings.TrimSpace(req.Ai)
 	if aiProvider == "" {
@@ -586,15 +652,19 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 		sendQaError(ctx, respChan, err)
 		return
 	}
+	logStage("model")
 	messages := buildQaMessages(question, history, items, webItems, req.DeepThinking)
+	logStage("prompt")
 	stream, err := llm.Stream(ctx, messages)
 	if err != nil {
 		sendQaError(ctx, respChan, err)
 		return
 	}
 	defer stream.Close()
+	logStage("model_stream")
 
 	var assistantBuilder strings.Builder
+	firstTokenLogged := false
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -615,6 +685,10 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 		}
 		if chunk == nil || chunk.Content == "" {
 			continue
+		}
+		if !firstTokenLogged {
+			firstTokenLogged = true
+			consts.Logger.Infof(ctx, "perf qa_stream stage=first_token knowledgeCode=%s sessionId=%s requestMs=%d", knowledgeCode, sessionId, time.Since(requestStart).Milliseconds())
 		}
 		assistantBuilder.WriteString(chunk.Content)
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
@@ -641,11 +715,11 @@ func retrieveQaItems(ctx context.Context, userId int64, question string, knowled
 	}
 
 	terms := retrieveTerms(question)
-	records, err := g.DB("master").Model("qa_document_segment").Ctx(ctx).
-		WhereIn("knowledge_code", knowledgeCodes).
-		OrderDesc("id").
-		Limit(500).
-		All()
+	sqlTerms := retrieveSQLTerms(question, terms)
+	records, err := queryQaRetrieveRecords(ctx, userId, knowledgeCodes, sqlTerms)
+	if err == nil && len(records) == 0 && len(sqlTerms) > 0 {
+		records, err = queryQaRetrieveRecords(ctx, userId, knowledgeCodes, nil)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -660,26 +734,15 @@ func retrieveQaItems(ctx context.Context, userId int64, question string, knowled
 		if score <= 0 {
 			continue
 		}
-		documentId := record["document_id"].Int64()
-		if !canAccessDocument(ctx, userId, documentId) {
-			continue
-		}
-		document, docErr := g.DB("master").Model("qa_document").Ctx(ctx).
-			Fields("title, file_name, status").
-			Where("id = ?", documentId).
-			One()
-		if docErr != nil || document == nil || document["status"].String() != "active" {
-			continue
-		}
-		if title := document["title"].String(); title != "" {
+		if title := record["document_title"].String(); title != "" {
 			score += retrieveScore(question, terms, title) * 0.25
 		}
 		items = append(items, v1.RetrieveItem{
 			KnowledgeCode: record["knowledge_code"].String(),
-			DocumentId:    documentId,
-			DocumentTitle: document["title"].String(),
-			FileName:      document["file_name"].String(),
-			SegmentId:     record["id"].Int64(),
+			DocumentId:    record["document_id"].Int64(),
+			DocumentTitle: record["document_title"].String(),
+			FileName:      record["file_name"].String(),
+			SegmentId:     record["segment_id"].Int64(),
 			Content:       content,
 			Page:          record["page"].Int(),
 			Anchor:        record["anchor"].String(),
@@ -696,9 +759,67 @@ func retrieveQaItems(ctx context.Context, userId int64, question string, knowled
 	return items, nil
 }
 
+func queryQaRetrieveRecords(ctx context.Context, userId int64, knowledgeCodes []string, sqlTerms []string) (gdb.Result, error) {
+	args := make([]any, 0, 1+len(knowledgeCodes)+len(sqlTerms)*2)
+	args = append(args, userId)
+	args = append(args, convertToAnySlice(knowledgeCodes)...)
+
+	keywordClause := ""
+	if len(sqlTerms) > 0 {
+		likeParts := make([]string, 0, len(sqlTerms))
+		for _, term := range sqlTerms {
+			likeParts = append(likeParts, "(s.content LIKE ? OR d.title LIKE ?)")
+			likeArg := "%" + term + "%"
+			args = append(args, likeArg, likeArg)
+		}
+		keywordClause = " AND (" + strings.Join(likeParts, " OR ") + ")"
+	}
+
+	return g.DB("master").Ctx(ctx).Raw(fmt.Sprintf(`
+		SELECT DISTINCT s.id AS segment_id, s.knowledge_code, s.document_id,
+		       s.content, s.page, s.anchor,
+		       d.title AS document_title, d.file_name
+		FROM qa_document_segment s
+		INNER JOIN qa_document d ON d.id = s.document_id AND d.status = 'active'
+		INNER JOIN qa_document_permission dp ON dp.document_id = s.document_id
+		                                      AND dp.enabled = 1
+		                                      AND dp.user_id IN (?, 0)
+		WHERE s.knowledge_code IN (%s)%s
+		ORDER BY s.id DESC
+		LIMIT 500`, inPlaceholders(len(knowledgeCodes)), keywordClause),
+		args...,
+	).All()
+}
+
+// inPlaceholders returns comma-separated "?" placeholders for SQL IN clauses.
+func inPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = "?"
+	}
+	return strings.Join(parts, ",")
+}
+
+func convertToAnySlice(items []string) []any {
+	result := make([]any, len(items))
+	for i, item := range items {
+		result[i] = item
+	}
+	return result
+}
+
+const maxSegmentContentRunes = 800
+
 func buildQaMessages(question string, history []model.ChatHistoryItem, items []v1.RetrieveItem, webItems []v1.WebSearchItem, deepThinking bool) []*schema.Message {
 	var contextBuilder strings.Builder
 	for index, item := range items {
+		content := item.Content
+		if len([]rune(content)) > maxSegmentContentRunes {
+			content = string([]rune(content)[:maxSegmentContentRunes]) + "..."
+		}
 		contextBuilder.WriteString(fmt.Sprintf("【引用%d】知识库:%s 文档:%s 文件:%s 页码:%d 锚点:%s\n%s\n\n",
 			index+1,
 			item.KnowledgeCode,
@@ -706,7 +827,7 @@ func buildQaMessages(question string, history []model.ChatHistoryItem, items []v
 			item.FileName,
 			item.Page,
 			item.Anchor,
-			item.Content,
+			content,
 		))
 	}
 	if contextBuilder.Len() == 0 {
@@ -1079,9 +1200,6 @@ func defaultPopularQuestions(knowledgeCode string, knowledgeCodes []string, limi
 }
 
 func createQaSyncPlaceholder(ctx context.Context, syncType string, knowledgeCode string) (*v1.QaSyncRes, error) {
-	if err := ensureQaTables(ctx); err != nil {
-		return nil, err
-	}
 	userId := currentUserId(ctx)
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -1109,11 +1227,11 @@ func createQaSyncPlaceholder(ctx context.Context, syncType string, knowledgeCode
 
 func qaSyncProvider() string {
 	if consts.Config == nil || consts.Config.QaConfig == nil || consts.Config.QaConfig.Sync == nil {
-		return "local"
+		return aidgp.ProviderMock
 	}
 	provider := strings.TrimSpace(consts.Config.QaConfig.Sync.Provider)
 	if provider == "" {
-		return "local"
+		return aidgp.ProviderMock
 	}
 	return provider
 }
@@ -1155,6 +1273,149 @@ func insertQaSyncTask(ctx context.Context, provider string, syncType string, sta
 	}).InsertAndGetId()
 }
 
+func executeQaSync(ctx context.Context, syncType string, knowledgeCode string) (*v1.QaSyncRes, error) {
+	userId := currentUserId(ctx)
+	if userId <= 0 {
+		return nil, gerror.New("用户未登录")
+	}
+	if knowledgeCode != "" {
+		if _, err := accessibleKnowledgeCodes(ctx, userId, knowledgeCode); err != nil {
+			return nil, err
+		}
+	}
+	provider := qaSyncProvider()
+	taskId, err := insertQaSyncTaskV2(ctx, provider, syncType, "running", "同步任务已开始")
+	if err != nil {
+		return nil, err
+	}
+	client := qaAidgpClient(provider)
+	result, syncErr := callAidgpSync(ctx, client, syncType, knowledgeCode)
+	status := "success"
+	message := result.Message
+	if syncErr != nil {
+		status = "failed"
+		message = syncErr.Error()
+		result.FailureCount++
+		result.Logs = append(result.Logs, aidgp.SyncLog{
+			Action:  "execute",
+			Status:  "failed",
+			Message: syncErr.Error(),
+		})
+	} else if result.FailureCount > 0 {
+		status = "partial_failed"
+	} else if result.SuccessCount == 0 && result.SkippedCount > 0 {
+		status = "skipped"
+	}
+	if err = insertQaSyncLogs(ctx, taskId, provider, syncType, result.Logs); err != nil {
+		return nil, err
+	}
+	if err = finishQaSyncTask(ctx, taskId, status, message, result.SuccessCount, result.FailureCount, result.SkippedCount); err != nil {
+		return nil, err
+	}
+	return &v1.QaSyncRes{
+		TaskId:       taskId,
+		Provider:     provider,
+		SyncType:     syncType,
+		Status:       status,
+		Message:      message,
+		SuccessCount: result.SuccessCount,
+		FailureCount: result.FailureCount,
+		SkippedCount: result.SkippedCount,
+	}, nil
+}
+
+func qaAidgpClient(provider string) aidgp.Client {
+	cfg := aidgp.Config{Provider: provider}
+	if consts.Config != nil && consts.Config.QaConfig != nil && consts.Config.QaConfig.Sync != nil && consts.Config.QaConfig.Sync.Aidgp != nil {
+		aidgpCfg := consts.Config.QaConfig.Sync.Aidgp
+		cfg.BaseUrl = aidgpCfg.BaseUrl
+		cfg.AppKey = aidgpCfg.AppKey
+		cfg.AppSecret = aidgpCfg.AppSecret
+	}
+	return aidgp.NewClient(cfg)
+}
+
+func callAidgpSync(ctx context.Context, client aidgp.Client, syncType string, knowledgeCode string) (aidgp.SyncResult, error) {
+	scope := aidgp.SyncScope{KnowledgeCode: knowledgeCode}
+	switch syncType {
+	case aidgp.SyncKnowledgeBases:
+		return client.SyncKnowledgeBases(ctx, scope)
+	case aidgp.SyncDocuments:
+		return client.SyncDocuments(ctx, scope)
+	case aidgp.SyncPermissions:
+		return client.SyncPermissions(ctx, scope)
+	case aidgp.SyncGridData:
+		return client.SyncGridData(ctx, scope)
+	case aidgp.SyncTrafficData:
+		return client.SyncTrafficData(ctx, scope)
+	case aidgp.SyncPopulationData:
+		return client.SyncPopulationData(ctx, scope)
+	default:
+		return aidgp.SyncResult{}, fmt.Errorf("unsupported sync type: %s", syncType)
+	}
+}
+
+func insertQaSyncTaskV2(ctx context.Context, provider string, syncType string, status string, message string) (int64, error) {
+	now := int(gtime.Timestamp())
+	return g.DB("master").Model("qa_sync_task").Ctx(ctx).Data(g.Map{
+		"provider":      provider,
+		"sync_type":     syncType,
+		"status":        status,
+		"message":       message,
+		"success_count": 0,
+		"failure_count": 0,
+		"skipped_count": 0,
+		"started_at":    now,
+		"finished_at":   0,
+		"create_time":   now,
+		"update_time":   now,
+	}).InsertAndGetId()
+}
+
+func finishQaSyncTask(ctx context.Context, taskId int64, status string, message string, successCount int, failureCount int, skippedCount int) error {
+	now := int(gtime.Timestamp())
+	_, err := g.DB("master").Model("qa_sync_task").Ctx(ctx).
+		Where("id = ?", taskId).
+		Data(g.Map{
+			"status":        status,
+			"message":       message,
+			"success_count": successCount,
+			"failure_count": failureCount,
+			"skipped_count": skippedCount,
+			"finished_at":   now,
+			"update_time":   now,
+		}).
+		Update()
+	return err
+}
+
+func insertQaSyncLogs(ctx context.Context, taskId int64, provider string, syncType string, logs []aidgp.SyncLog) error {
+	now := int(gtime.Timestamp())
+	if len(logs) == 0 {
+		logs = []aidgp.SyncLog{{Action: "execute", Status: "success", Message: "同步执行完成，无明细记录"}}
+	}
+	for _, item := range logs {
+		status := strings.TrimSpace(item.Status)
+		if status == "" {
+			status = "success"
+		}
+		if _, err := g.DB("master").Model("qa_sync_log").Ctx(ctx).Data(g.Map{
+			"task_id":     taskId,
+			"provider":    provider,
+			"sync_type":   syncType,
+			"external_id": item.ExternalId,
+			"local_id":    item.LocalId,
+			"action":      item.Action,
+			"status":      status,
+			"message":     item.Message,
+			"create_time": now,
+		}).Insert(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func newQaSessionId() string {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
@@ -1171,38 +1432,6 @@ func currentUserId(ctx context.Context) int64 {
 	return gconv.Int64(userIdVal)
 }
 
-func canAccessKnowledgeBase(ctx context.Context, userId int64, code string) bool {
-	if code == "" {
-		return false
-	}
-	if userId <= 0 {
-		return false
-	}
-	adminPerms, adminErr := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).
-		Fields("knowledge_code, enabled").
-		Where("user_id = ?", userId).
-		All()
-	if adminErr == nil && len(adminPerms) > 0 {
-		for _, perm := range adminPerms {
-			if normalizeQaKnowledgeCode(perm["knowledge_code"].String()) == code {
-				return perm["enabled"].Int() != 0
-			}
-		}
-		return false
-	}
-
-	count, err := g.DB("master").Model("qa_knowledge_base_permission").Ctx(ctx).
-		Where("knowledge_code = ? AND user_id = ? AND enabled = ?", code, userId, 1).
-		Count()
-	if err == nil && count > 0 {
-		return true
-	}
-	publicCount, err := g.DB("master").Model("qa_knowledge_base_permission").Ctx(ctx).
-		Where("knowledge_code = ? AND user_id = ? AND enabled = ?", code, 0, 1).
-		Count()
-	return err == nil && publicCount > 0
-}
-
 func normalizeQaKnowledgeCode(code string) string {
 	switch strings.TrimSpace(code) {
 	case "policy_files":
@@ -1216,6 +1445,8 @@ func normalizeQaKnowledgeCode(code string) string {
 
 func accessibleKnowledgeCodes(ctx context.Context, userId int64, requested string) ([]string, error) {
 	requestedSet := requestedKnowledgeCodeSet(requested)
+
+	// 1. Get all enabled knowledge base codes
 	records, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
 		Fields("code").
 		Where("enabled = ?", 1).
@@ -1224,13 +1455,26 @@ func accessibleKnowledgeCodes(ctx context.Context, userId int64, requested strin
 	if err != nil {
 		return nil, err
 	}
-	codes := make([]string, 0, len(records))
+	allCodes := make([]string, 0, len(records))
 	for _, record := range records {
 		code := record["code"].String()
 		if len(requestedSet) > 0 && !requestedSet[code] {
 			continue
 		}
-		if canAccessKnowledgeBase(ctx, userId, code) {
+		allCodes = append(allCodes, code)
+	}
+	if len(allCodes) == 0 {
+		if len(requestedSet) > 0 {
+			return nil, gerror.New("无权访问指定知识库")
+		}
+		return []string{}, nil
+	}
+
+	adminScoped, adminHasPerm, adminEnabled, qaAllowed := batchKnowledgePermissions(ctx, userId)
+
+	codes := make([]string, 0, len(allCodes))
+	for _, code := range allCodes {
+		if checkKnowledgeAccess(code, adminScoped, adminHasPerm, adminEnabled, qaAllowed) {
 			codes = append(codes, code)
 		}
 	}
@@ -1238,6 +1482,57 @@ func accessibleKnowledgeCodes(ctx context.Context, userId int64, requested strin
 		return nil, gerror.New("无权访问指定知识库")
 	}
 	return codes, nil
+}
+
+// batchKnowledgePermissions queries all permission data in 2 batch queries.
+// For userId <= 0, only public qa permissions are returned.
+func batchKnowledgePermissions(ctx context.Context, userId int64) (adminScoped bool, adminHasPerm, adminEnabled, qaAllowed map[string]bool) {
+	adminHasPerm = make(map[string]bool)
+	adminEnabled = make(map[string]bool)
+	qaAllowed = make(map[string]bool)
+
+	if userId > 0 {
+		adminPerms, _ := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).
+			Fields("knowledge_code, enabled").
+			Where("user_id = ?", userId).
+			All()
+		adminScoped = len(adminPerms) > 0
+		for _, perm := range adminPerms {
+			rawCode := perm["knowledge_code"].String()
+			enabled := perm["enabled"].Int() != 0
+			normalized := normalizeQaKnowledgeCode(rawCode)
+			adminHasPerm[rawCode] = true
+			adminHasPerm[normalized] = true
+			adminEnabled[rawCode] = enabled
+			adminEnabled[normalized] = enabled
+		}
+	}
+
+	// Query qa_knowledge_base_permission for public access (user_id=0)
+	// and user-specific access when userId > 0
+	queryModel := g.DB("master").Model("qa_knowledge_base_permission").Ctx(ctx).
+		Fields("knowledge_code").
+		Where("user_id = ? AND enabled = ?", 0, 1)
+	if userId > 0 {
+		queryModel = queryModel.WhereOr("user_id = ? AND enabled = ?", userId, 1)
+	}
+	qaPerms, _ := queryModel.All()
+	for _, perm := range qaPerms {
+		qaAllowed[perm["knowledge_code"].String()] = true
+	}
+
+	return
+}
+
+// checkKnowledgeAccess determines if a user can access a specific knowledge base code.
+func checkKnowledgeAccess(code string, adminScoped bool, adminHasPerm, adminEnabled, qaAllowed map[string]bool) bool {
+	if adminScoped {
+		return adminEnabled[code]
+	}
+	if adminHasPerm[code] {
+		return adminEnabled[code]
+	}
+	return qaAllowed[code]
 }
 
 func requestedKnowledgeCodeSet(requested string) map[string]bool {
@@ -1248,6 +1543,7 @@ func requestedKnowledgeCodeSet(requested string) map[string]bool {
 	set := make(map[string]bool)
 	for _, part := range strings.Split(requested, ",") {
 		code := strings.TrimSpace(part)
+		code = normalizeQaKnowledgeCode(code)
 		if code == "" || set[code] {
 			continue
 		}
@@ -1289,6 +1585,60 @@ func retrieveTerms(question string) []string {
 			terms = append(terms, strings.ToLower(part))
 		}
 	}
+	for _, term := range retrieveCJKBigrams(normalized, 8) {
+		terms = append(terms, term)
+	}
+	return uniqueStrings(terms)
+}
+
+func retrieveSQLTerms(question string, terms []string) []string {
+	candidates := make([]string, 0, len(terms)+8)
+	for _, term := range terms {
+		term = strings.TrimSpace(strings.ToLower(term))
+		runeCount := len([]rune(term))
+		if runeCount >= 2 && runeCount <= 32 {
+			candidates = append(candidates, term)
+		}
+	}
+	for _, term := range retrieveCJKBigrams(question, 8) {
+		candidates = append(candidates, term)
+	}
+	candidates = uniqueStrings(candidates)
+	if len(candidates) > 8 {
+		return candidates[:8]
+	}
+	return candidates
+}
+
+func retrieveCJKBigrams(text string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	var token []rune
+	terms := make([]string, 0, limit)
+	flush := func() {
+		if len(token) < 2 || len(terms) >= limit {
+			token = token[:0]
+			return
+		}
+		if len(token) <= 4 {
+			terms = append(terms, strings.ToLower(string(token)))
+			token = token[:0]
+			return
+		}
+		for i := 0; i+1 < len(token) && len(terms) < limit; i += 2 {
+			terms = append(terms, strings.ToLower(string(token[i:i+2])))
+		}
+		token = token[:0]
+	}
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			token = append(token, r)
+			continue
+		}
+		flush()
+	}
+	flush()
 	return uniqueStrings(terms)
 }
 
@@ -1327,35 +1677,56 @@ func uniqueStrings(items []string) []string {
 	return result
 }
 
-func ensureQaTables(ctx context.Context) error {
-	db := g.DB("master")
-	dbType := ""
-	if cfg := db.GetConfig(); cfg != nil {
-		dbType = cfg.Type
-	}
-	if err := createQaTables(ctx, db, dbType); err != nil {
-		return err
-	}
-	return seedQaTables(ctx, db)
-}
-
-func createQaTables(ctx context.Context, db gdb.DB, dbType string) error {
-	var sqlList []string
-	switch dbType {
-	case "sqlite":
-		sqlList = sqliteQaTableSQL()
-	default:
-		sqlList = mysqlQaTableSQL()
-	}
-	for _, sql := range sqlList {
+func CreateQaTables(ctx context.Context, db gdb.DB) error {
+	for _, sql := range mysqlQaTableSQL() {
 		if _, err := db.Exec(ctx, sql); err != nil {
 			return err
+		}
+	}
+	// Performance indexes for retrieval optimization
+	indexes := []struct {
+		table string
+		name  string
+		sql   string
+	}{
+		{"qa_document_segment", "idx_qa_segment_kb_id", "ADD INDEX idx_qa_segment_kb_id (knowledge_code, id)"},
+		{"qa_document", "idx_qa_doc_status", "ADD INDEX idx_qa_doc_status (id, status)"},
+		{"qa_document_permission", "idx_qa_doc_perm_user", "ADD INDEX idx_qa_doc_perm_user (user_id, enabled, document_id)"},
+		{"admin_user_knowledge_permission", "idx_admin_kb_perm_user", "ADD INDEX idx_admin_kb_perm_user (user_id, knowledge_code)"},
+		{"qa_sync_task", "idx_qa_sync_task_status", "ADD INDEX idx_qa_sync_task_status (status, update_time)"},
+		{"qa_sync_log", "idx_qa_sync_log_task", "ADD INDEX idx_qa_sync_log_task (task_id, status)"},
+	}
+	for _, idx := range indexes {
+		// Use ALTER TABLE ... ADD INDEX which is widely supported;
+		// ignore duplicate key errors since index may already exist
+		if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s %s", idx.table, idx.sql)); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+				consts.Logger.Debugf(ctx, "index %s creation skipped: %s", idx.name, err.Error())
+			}
+		}
+	}
+	migrations := []struct {
+		table string
+		sql   string
+	}{
+		{"qa_sync_task", "ADD COLUMN success_count INT NOT NULL DEFAULT 0"},
+		{"qa_sync_task", "ADD COLUMN failure_count INT NOT NULL DEFAULT 0"},
+		{"qa_sync_task", "ADD COLUMN skipped_count INT NOT NULL DEFAULT 0"},
+		{"qa_sync_task", "ADD COLUMN started_at INT NOT NULL DEFAULT 0"},
+		{"qa_sync_task", "ADD COLUMN finished_at INT NOT NULL DEFAULT 0"},
+	}
+	for _, item := range migrations {
+		if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s %s", item.table, item.sql)); err != nil {
+			errText := strings.ToLower(err.Error())
+			if !strings.Contains(errText, "duplicate") {
+				consts.Logger.Debugf(ctx, "qa migration skipped: table=%s sql=%s err=%s", item.table, item.sql, err.Error())
+			}
 		}
 	}
 	return nil
 }
 
-func seedQaTables(ctx context.Context, db gdb.DB) error {
+func SeedQaTables(ctx context.Context, db gdb.DB) error {
 	count, err := db.Model("qa_knowledge_base").Ctx(ctx).Count()
 	if err != nil {
 		return err
@@ -1476,113 +1847,6 @@ func seedQaDemoDocuments(ctx context.Context, db gdb.DB, now int) error {
 	return nil
 }
 
-func sqliteQaTableSQL() []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS qa_knowledge_base (
-code TEXT PRIMARY KEY,
-name TEXT NOT NULL,
-description TEXT,
-enabled INTEGER NOT NULL DEFAULT 1,
-sort INTEGER NOT NULL DEFAULT 0,
-source_provider TEXT NOT NULL DEFAULT 'local',
-external_id TEXT,
-sync_version TEXT,
-last_sync_time INTEGER NOT NULL DEFAULT 0,
-permission_hash TEXT,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_knowledge_base_permission (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-knowledge_code TEXT NOT NULL,
-user_id INTEGER NOT NULL DEFAULT 0,
-enabled INTEGER NOT NULL DEFAULT 1,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_document (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-knowledge_code TEXT NOT NULL,
-title TEXT NOT NULL,
-file_name TEXT,
-file_type TEXT,
-source_provider TEXT NOT NULL DEFAULT 'local',
-external_id TEXT,
-status TEXT NOT NULL DEFAULT 'active',
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_document_segment (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-document_id INTEGER NOT NULL,
-knowledge_code TEXT NOT NULL,
-segment_index INTEGER NOT NULL,
-content TEXT NOT NULL,
-page INTEGER NOT NULL DEFAULT 0,
-anchor TEXT,
-embedding_id TEXT,
-create_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_document_permission (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-document_id INTEGER NOT NULL,
-user_id INTEGER NOT NULL DEFAULT 0,
-enabled INTEGER NOT NULL DEFAULT 1,
-source_provider TEXT NOT NULL DEFAULT 'local',
-external_id TEXT,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_session (
-session_id TEXT PRIMARY KEY,
-user_id INTEGER NOT NULL,
-knowledge_code TEXT,
-title TEXT,
-status TEXT NOT NULL DEFAULT 'active',
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_message (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-session_id TEXT NOT NULL,
-user_id INTEGER NOT NULL,
-knowledge_code TEXT,
-role TEXT NOT NULL,
-content TEXT NOT NULL,
-create_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_citation (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-session_id TEXT NOT NULL,
-user_id INTEGER NOT NULL,
-message_id INTEGER NOT NULL DEFAULT 0,
-document_id INTEGER NOT NULL,
-segment_id INTEGER NOT NULL,
-preview_text TEXT,
-create_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_question_stat (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-user_id INTEGER NOT NULL,
-knowledge_code TEXT,
-question TEXT NOT NULL,
-hit_count INTEGER NOT NULL DEFAULT 1,
-last_asked_at INTEGER NOT NULL,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS qa_sync_task (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-provider TEXT NOT NULL DEFAULT 'local',
-sync_type TEXT NOT NULL,
-status TEXT NOT NULL DEFAULT 'pending',
-message TEXT,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-	}
-}
-
 func mysqlQaTableSQL() []string {
 	return []string{
 		`CREATE TABLE IF NOT EXISTS qa_knowledge_base (
@@ -1700,8 +1964,27 @@ provider VARCHAR(32) NOT NULL DEFAULT 'local',
 sync_type VARCHAR(64) NOT NULL,
 status VARCHAR(32) NOT NULL DEFAULT 'pending',
 message TEXT,
+success_count INT NOT NULL DEFAULT 0,
+failure_count INT NOT NULL DEFAULT 0,
+skipped_count INT NOT NULL DEFAULT 0,
+started_at INT NOT NULL DEFAULT 0,
+finished_at INT NOT NULL DEFAULT 0,
 create_time INT NOT NULL,
 update_time INT NOT NULL,
+INDEX idx_provider_type (provider, sync_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS qa_sync_log (
+id BIGINT PRIMARY KEY AUTO_INCREMENT,
+task_id BIGINT NOT NULL,
+provider VARCHAR(32) NOT NULL DEFAULT 'local',
+sync_type VARCHAR(64) NOT NULL,
+external_id VARCHAR(128),
+local_id VARCHAR(128),
+action VARCHAR(32) NOT NULL,
+status VARCHAR(32) NOT NULL,
+message TEXT,
+create_time INT NOT NULL,
+INDEX idx_task_id (task_id),
 INDEX idx_provider_type (provider, sync_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}

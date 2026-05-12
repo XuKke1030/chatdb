@@ -4,7 +4,7 @@
 gfcli:
   gen:
     dao:
-      - link: "sqlite::@file(./db.sqlite3)"
+      - link: "mysql:root:123456@tcp(127.0.0.1:3306)/chatdb?charset=utf8mb4&parseTime=true"
         group: "master"
         prefix: ""
         tables: ""

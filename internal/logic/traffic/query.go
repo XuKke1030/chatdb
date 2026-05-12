@@ -14,7 +14,6 @@ import (
 func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQuery) (*model.TrafficAggregateResult, error) {
 	groupBy := normalizeTrafficGroupBy(query.GroupBy)
 	db := g.DB("master")
-	dbType := dbType(db)
 
 	base := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "")
 	summaryRecord, err := base.Fields(trafficCountFields()).One()
@@ -23,7 +22,7 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 	}
 	summary := aggregateSummaryFromRecord(summaryRecord)
 
-	groupExpr := trafficGroupExpr(dbType, groupBy)
+	groupExpr := trafficGroupExpr(groupBy)
 	seriesRecords, err := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "").
 		Fields(fmt.Sprintf("%s AS name, %s", groupExpr, trafficCountFields())).
 		Group("name").
@@ -217,12 +216,9 @@ func normalizeTrafficGroupBy(groupBy string) string {
 	}
 }
 
-func trafficGroupExpr(dbType string, groupBy string) string {
+func trafficGroupExpr(groupBy string) string {
 	switch groupBy {
 	case "hour":
-		if dbType == "sqlite" {
-			return "substr(snapshot_time, 1, 13) || ':00'"
-		}
 		return "DATE_FORMAT(snapshot_time, '%Y-%m-%d %H:00')"
 	case "gate":
 		return "COALESCE(NULLIF(device_name, ''), device_id)"
@@ -231,9 +227,6 @@ func trafficGroupExpr(dbType string, groupBy string) string {
 	case "indir":
 		return "CASE WHEN in_dir = 0 THEN '进' WHEN in_dir = 1 THEN '出' ELSE '未知' END"
 	default:
-		if dbType == "sqlite" {
-			return "substr(snapshot_time, 1, 10)"
-		}
 		return "DATE(snapshot_time)"
 	}
 }

@@ -93,6 +93,9 @@ func applyEnvOverrides() {
 	if Config.Traffic.Ingest == nil {
 		Config.Traffic.Ingest = &model.TrafficIngestConfig{}
 	}
+	if Config.Redis == nil {
+		Config.Redis = &model.RedisConfig{}
+	}
 
 	setStringFromEnv(&Config.Server.Address, "CHATDB_SERVER_ADDRESS")
 	setStringFromEnv(&Config.Server.Mode, "CHATDB_SERVER_MODE")
@@ -116,6 +119,8 @@ func applyEnvOverrides() {
 	setStringFromEnv(&Config.Traffic.Mqtt.ClientIdPrefix, "CHATDB_TRAFFIC_MQTT_CLIENT_ID_PREFIX")
 	setStringFromEnv(&Config.Traffic.Mqtt.Username, "CHATDB_TRAFFIC_MQTT_USERNAME")
 	setStringFromEnv(&Config.Traffic.Mqtt.Password, "CHATDB_TRAFFIC_MQTT_PASSWORD")
+	setStringFromEnv(&Config.Redis.Address, "CHATDB_REDIS_ADDRESS")
+	setStringFromEnv(&Config.Redis.Password, "CHATDB_REDIS_PASSWORD")
 
 	if enabled := os.Getenv("CHATDB_QA_WEB_SEARCH_ENABLED"); enabled != "" {
 		if v, err := strconv.ParseBool(enabled); err == nil {
@@ -151,6 +156,11 @@ func applyEnvOverrides() {
 	if minutes := os.Getenv("CHATDB_TRAFFIC_NO_DATA_WARN_MINUTES"); minutes != "" {
 		if v, err := strconv.Atoi(minutes); err == nil {
 			Config.Traffic.Ingest.NoDataWarnMinutes = v
+		}
+	}
+	if db := os.Getenv("CHATDB_REDIS_DB"); db != "" {
+		if v, err := strconv.Atoi(db); err == nil {
+			Config.Redis.Db = v
 		}
 	}
 

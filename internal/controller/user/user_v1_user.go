@@ -1,8 +1,11 @@
 package user
 
 import (
+	"ai-chat-sql/internal/consts"
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	v1 "ai-chat-sql/api/user/v1"
 	"ai-chat-sql/internal/model"
@@ -68,15 +71,34 @@ func (c *ControllerV1) UserPermissions(ctx context.Context, req *v1.UserPermissi
 	if err != nil || user == nil {
 		return &v1.UserPermissionsRes{Authenticated: false, RuleLevel: 0, Permissions: topicItemsFromRuleLevel(0, false), QaPermissions: knowledgePermissionsForUser(ctx, 0, false)}, nil
 	}
-	ruleLevel := effectiveRuleLevel(ctx, userId, user.RuleLevel)
+	snapshot := loadUserPermissionSnapshot(ctx, userId, user.RuleLevel)
 	return &v1.UserPermissionsRes{
-		Authenticated: true,
-		UserId:        userId,
-		Username:      user.Username,
-		RuleLevel:     ruleLevel,
-		Permissions:   topicItemsFromRuleLevel(ruleLevel, false),
-		QaPermissions: knowledgePermissionsForUser(ctx, userId, false),
+		Authenticated:     true,
+		UserId:            userId,
+		Username:          user.Username,
+		RuleLevel:         snapshot.RuleLevel,
+		PermissionVersion: snapshot.PermissionVersion,
+		Permissions:       topicItemsFromRuleLevel(snapshot.RuleLevel, false),
+		QaPermissions:     knowledgePermissionsForUser(ctx, userId, false),
 	}, nil
+}
+
+func (c *ControllerV1) UserBootstrap(ctx context.Context, req *v1.UserBootstrapReq) (res *v1.UserBootstrapRes, err error) {
+	userId := currentUserId(ctx)
+	if userId <= 0 {
+		return bootstrapGuest(ctx), nil
+	}
+	cacheKey := fmt.Sprintf("user_bootstrap:%d", userId)
+	cached, err := consts.Cache.GetOrSetFunc(ctx, cacheKey, func(ctx context.Context) (interface{}, error) {
+		return buildUserBootstrap(ctx, userId)
+	}, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if out, ok := cached.Interface().(*v1.UserBootstrapRes); ok {
+		return out, nil
+	}
+	return buildUserBootstrap(ctx, userId)
 }
 
 func (c *ControllerV1) UserTopics(ctx context.Context, req *v1.UserTopicsReq) (res *v1.UserTopicsRes, err error) {
@@ -139,6 +161,135 @@ func (c *ControllerV1) UserPopularQuestions(ctx context.Context, req *v1.UserPop
 		})
 	}
 	return &v1.UserPopularQuestionsRes{List: list}, nil
+}
+
+func bootstrapGuest(ctx context.Context) *v1.UserBootstrapRes {
+	topicPermissions := topicItemsFromRuleLevel(0, false)
+	return &v1.UserBootstrapRes{
+		Authenticated:     false,
+		RuleLevel:         0,
+		PermissionVersion: 0,
+		TopicPermissions:  topicPermissions,
+		Topics:            []model.TopicItem{},
+		QaPermissions:     knowledgePermissionsForUser(ctx, 0, false),
+		KnowledgeBases:    []v1.UserKnowledgePermission{},
+		PopularQuestions:  []v1.UserPopularQuestionItem{},
+		AlertSummary:      emptyAlertSummary(),
+	}
+}
+
+func buildUserBootstrap(ctx context.Context, userId int64) (*v1.UserBootstrapRes, error) {
+	user, err := service.User().GetUserInfoById(ctx, userId)
+	if err != nil || user == nil {
+		return bootstrapGuest(ctx), nil
+	}
+	var outUser model.User
+	if err = gconv.Scan(user, &outUser); err != nil {
+		return nil, err
+	}
+	snapshot := loadUserPermissionSnapshot(ctx, userId, user.RuleLevel)
+	topicPermissions := topicItemsFromRuleLevel(snapshot.RuleLevel, false)
+	topics := enabledTopics(topicPermissions)
+	qaPermissions := knowledgePermissionsForUser(ctx, userId, false)
+	knowledgeBases := enabledKnowledgeBases(qaPermissions)
+	popularQuestions := popularQuestionsForUser(ctx, userId, 3)
+	alertSummary := alertSummaryForUser(ctx, int(userId), 5)
+	return &v1.UserBootstrapRes{
+		Authenticated:     true,
+		User:              &outUser,
+		RuleLevel:         snapshot.RuleLevel,
+		PermissionVersion: snapshot.PermissionVersion,
+		TopicPermissions:  topicPermissions,
+		Topics:            topics,
+		QaPermissions:     qaPermissions,
+		KnowledgeBases:    knowledgeBases,
+		PopularQuestions:  popularQuestions,
+		AlertSummary:      alertSummary,
+	}, nil
+}
+
+func enabledTopics(items []model.TopicItem) []model.TopicItem {
+	list := make([]model.TopicItem, 0, len(items))
+	for _, item := range items {
+		if item.Enabled {
+			list = append(list, item)
+		}
+	}
+	return list
+}
+
+func enabledKnowledgeBases(items []v1.UserKnowledgePermission) []v1.UserKnowledgePermission {
+	list := make([]v1.UserKnowledgePermission, 0, len(items))
+	for _, item := range items {
+		if item.Enabled {
+			list = append(list, item)
+		}
+	}
+	return list
+}
+
+func popularQuestionsForUser(ctx context.Context, userId int64, limit int) []v1.UserPopularQuestionItem {
+	if limit <= 0 {
+		limit = 3
+	}
+	username := usernameById(ctx, userId)
+	if username == "" {
+		return []v1.UserPopularQuestionItem{}
+	}
+	records, err := g.DB("master").Model("admin_operation_log").Ctx(ctx).
+		Fields("content, COUNT(1) AS count").
+		Where("username = ? AND action_type = ? AND result = ? AND content <> ?", username, "闂瓟鏌ヨ", "success", "").
+		Group("content").
+		OrderDesc("count").
+		Limit(limit).
+		All()
+	if err != nil {
+		return []v1.UserPopularQuestionItem{}
+	}
+	list := make([]v1.UserPopularQuestionItem, 0, len(records))
+	for _, record := range records {
+		question := record["content"].String()
+		if question == "" {
+			continue
+		}
+		list = append(list, v1.UserPopularQuestionItem{Question: question, Count: record["count"].Int()})
+	}
+	return list
+}
+
+func alertSummaryForUser(ctx context.Context, userId int, limit int) v1.UserAlertSummary {
+	if userId <= 0 {
+		return emptyAlertSummary()
+	}
+	alerts, err := service.Alert().GetAlertList(ctx, userId, "")
+	if err != nil {
+		return emptyAlertSummary()
+	}
+	summary := emptyAlertSummary()
+	if limit <= 0 {
+		limit = 5
+	}
+	for _, item := range alerts {
+		summary.Total++
+		summary.ByTopic[item.Topic]++
+		switch strings.ToLower(item.Level) {
+		case "critical":
+			summary.Critical++
+		default:
+			summary.Warning++
+		}
+		if len(summary.Latest) < limit {
+			summary.Latest = append(summary.Latest, item)
+		}
+	}
+	return summary
+}
+
+func emptyAlertSummary() v1.UserAlertSummary {
+	return v1.UserAlertSummary{
+		ByTopic: map[string]int{},
+		Latest:  []model.AlertItem{},
+	}
 }
 
 func currentUserId(ctx context.Context) int64 {
@@ -216,18 +367,52 @@ func normalizeQaKnowledgeCode(code string) string {
 	}
 }
 
-func effectiveRuleLevel(ctx context.Context, userId int64, fallback int) int {
+type userPermissionSnapshot struct {
+	RuleLevel         int
+	PermissionVersion int
+}
+
+func loadUserPermissionSnapshot(ctx context.Context, userId int64, fallback int) userPermissionSnapshot {
+	if userId <= 0 {
+		return userPermissionSnapshot{RuleLevel: 0, PermissionVersion: 0}
+	}
+	cacheKey := fmt.Sprintf("user_permission:%d", userId)
+	cached, err := consts.Cache.GetOrSetFunc(ctx, cacheKey, func(ctx context.Context) (interface{}, error) {
+		return queryUserPermissionSnapshot(ctx, userId, fallback), nil
+	}, 5*time.Second)
+	if err == nil {
+		if snapshot, ok := cached.Interface().(userPermissionSnapshot); ok {
+			return snapshot
+		}
+		if snapshot, ok := cached.Interface().(*userPermissionSnapshot); ok && snapshot != nil {
+			return *snapshot
+		}
+	}
+	return queryUserPermissionSnapshot(ctx, userId, fallback)
+}
+
+func queryUserPermissionSnapshot(ctx context.Context, userId int64, fallback int) userPermissionSnapshot {
 	record, err := g.DB("master").Model("admin_user_profile").Ctx(ctx).
+		Fields("enabled, rule_level, permission_version").
 		Where("user_id = ?", userId).
 		One()
 	if err != nil || record == nil {
-		return fallback
+		return userPermissionSnapshot{RuleLevel: fallback, PermissionVersion: 1}
+	}
+	version := record["permission_version"].Int()
+	if version <= 0 {
+		version = 1
 	}
 	if record["enabled"].Val() != nil && record["enabled"].Int() == 0 {
-		return 0
+		return userPermissionSnapshot{RuleLevel: 0, PermissionVersion: version}
 	}
+	ruleLevel := fallback
 	if record["rule_level"].Val() != nil {
-		return record["rule_level"].Int()
+		ruleLevel = record["rule_level"].Int()
 	}
-	return fallback
+	return userPermissionSnapshot{RuleLevel: ruleLevel, PermissionVersion: version}
+}
+
+func effectiveRuleLevel(ctx context.Context, userId int64, fallback int) int {
+	return loadUserPermissionSnapshot(ctx, userId, fallback).RuleLevel
 }

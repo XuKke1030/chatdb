@@ -7,7 +7,7 @@ type DatabaseConfigItem struct {
 	UserName   string `json:"userName" dc:"用户名"`
 	Host       string `json:"host" dc:"主机地址"`
 	Port       int    `json:"port" dc:"端口号"`
-	DbType     string `json:"dbType" dc:"数据库类型，如: mysql, postgres, sqlite"`
+	DbType     string `json:"dbType" dc:"数据库类型，如: mysql, postgres"`
 	CreateTime int    `json:"createTime" dc:"创建时间"`
 	UpdateTime int    `json:"updateTime" dc:"更新时间"`
 }

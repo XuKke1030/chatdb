@@ -7,6 +7,7 @@ type ConfigData struct {
 	Jwt      []*JwtOption   `json:"jwt" dc:"JWT配置"`
 	DbConfig *DbConfig      `json:"db" dc:"数据库配置"`
 	Traffic  *TrafficConfig `json:"traffic"`
+	Redis    *RedisConfig   `json:"redis" dc:"Redis缓存配置"`
 }
 
 // ServerConfig 服务配置
@@ -98,4 +99,11 @@ type TrafficIngestConfig struct {
 	DedupeWindowDays     int `json:"dedupeWindowDays"`
 	RawPayloadRetainDays int `json:"rawPayloadRetainDays"`
 	NoDataWarnMinutes    int `json:"noDataWarnMinutes"`
+}
+
+// RedisConfig Redis缓存配置
+type RedisConfig struct {
+	Address  string `json:"address" dc:"Redis地址，如 127.0.0.1:6379"`
+	Password string `json:"password" dc:"Redis密码"`
+	Db       int    `json:"db" dc:"Redis数据库编号"`
 }

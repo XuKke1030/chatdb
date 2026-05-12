@@ -35,3 +35,8 @@ logs/
 *.out
 coverage/
 .gocache/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3

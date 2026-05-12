@@ -29,9 +29,6 @@ func (s *sSystemInit) Init(ctx context.Context) (err error) {
 	if err = s.CreatePrivateKey(ctx); err != nil {
 		return
 	}
-	if err = service.Traffic().InitTables(ctx); err != nil {
-		return
-	}
 	return
 }
 

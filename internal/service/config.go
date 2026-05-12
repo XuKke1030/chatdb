@@ -21,7 +21,6 @@ type (
 		// 格式
 		// mysql:root:12345678@tcp(127.0.0.1:3306)/test?loc=Local&parseTime=true
 		// pgsql:root:12345678@tcp(127.0.0.1:5432)/test
-		// sqlite::@file(/var/data/db.sqlite3)
 		GenDataBaseLink(ctx context.Context, databaseId int) (link string, err error)
 		// GetJwtOptions 获取JWT配置
 		GetJwtOptions(ctx context.Context, secret string) (option *model.JwtOption, err error)

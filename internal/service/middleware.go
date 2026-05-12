@@ -13,6 +13,8 @@ type (
 	IMiddleware interface {
 		// JwtAuth 校验jwt
 		JwtAuth(subject string) func(r *ghttp.Request)
+		// RequestMetrics 记录请求总耗时
+		RequestMetrics(r *ghttp.Request)
 		// HandlerResponse 处理 Http 请求返回结果
 		HandlerResponse(r *ghttp.Request)
 	}

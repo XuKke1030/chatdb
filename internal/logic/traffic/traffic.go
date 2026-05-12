@@ -4,14 +4,16 @@ import (
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 	"context"
+	"sync/atomic"
 	"time"
 
-	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 )
 
-type sTraffic struct{}
+type sTraffic struct {
+	ingestStatusReady atomic.Bool
+}
 
 func init() {
 	service.RegisterTraffic(NewTraffic())
@@ -23,8 +25,7 @@ func NewTraffic() *sTraffic {
 
 func (s *sTraffic) InitTables(ctx context.Context) error {
 	db := g.DB("master")
-	dbType := dbType(db)
-	for _, sql := range trafficTableSQL(dbType) {
+	for _, sql := range trafficTableSQL() {
 		if _, err := db.Exec(ctx, sql); err != nil {
 			return err
 		}
@@ -136,12 +137,16 @@ func (s *sTraffic) UpsertGateDevice(ctx context.Context, in model.TrafficGateDev
 }
 
 func (s *sTraffic) ensureIngestStatus(ctx context.Context) error {
+	if s.ingestStatusReady.Load() {
+		return nil
+	}
 	db := g.DB("master")
 	count, err := db.Model("traffic_ingest_status").Ctx(ctx).Where("source = ?", "mqtt").Count()
 	if err != nil {
 		return err
 	}
 	if count > 0 {
+		s.ingestStatusReady.Store(true)
 		return nil
 	}
 	now := int(gtime.Timestamp())
@@ -155,6 +160,9 @@ func (s *sTraffic) ensureIngestStatus(ctx context.Context) error {
 		"create_time":    now,
 		"update_time":    now,
 	}).Insert()
+	if err == nil {
+		s.ingestStatusReady.Store(true)
+	}
 	return err
 }
 
@@ -229,18 +237,8 @@ func (s *sTraffic) GetIngestStatus(ctx context.Context) (*model.TrafficIngestSta
 	}, nil
 }
 
-func trafficTableSQL(dbType string) []string {
-	if dbType == "sqlite" {
-		return []string{sqliteRecordSQL, sqliteDeviceSQL, sqliteLogSQL, sqliteStatusSQL}
-	}
+func trafficTableSQL() []string {
 	return []string{mysqlRecordSQL, mysqlDeviceSQL, mysqlLogSQL, mysqlStatusSQL}
-}
-
-func dbType(db gdb.DB) string {
-	if cfg := db.GetConfig(); cfg != nil {
-		return cfg.Type
-	}
-	return ""
 }
 
 func dbTime(t time.Time) string {
@@ -374,89 +372,3 @@ latest_error VARCHAR(512),
 create_time INT NOT NULL,
 update_time INT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
-
-const sqliteRecordSQL = `CREATE TABLE IF NOT EXISTS traffic_gate_record (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-device_id TEXT NOT NULL,
-device_name TEXT,
-camera_ip TEXT,
-plate_char TEXT,
-plate_normalized TEXT NOT NULL,
-plate_type TEXT,
-plate_color TEXT,
-vehicle_type TEXT,
-vehicle_type_ext TEXT,
-vehicle_color TEXT,
-vehicle_speed INTEGER DEFAULT 0,
-in_dir INTEGER DEFAULT -1,
-vehicle_dir TEXT,
-car_drv_dir TEXT,
-lane_id INTEGER DEFAULT 0,
-lane_desc TEXT,
-lane_dir_desc TEXT,
-snapshot_time TEXT NOT NULL,
-collect_time TEXT,
-source_insert_time TEXT,
-plate_picture TEXT,
-panorama_picture TEXT,
-vehicle_picture TEXT,
-car_pre_brand TEXT,
-car_sub_brand TEXT,
-car_year_brand TEXT,
-plate_origin TEXT,
-plate_region_type TEXT,
-is_hk_macau INTEGER NOT NULL DEFAULT 0,
-raw_payload TEXT,
-payload_hash TEXT,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL,
-UNIQUE(device_id, plate_normalized, snapshot_time)
-)`
-
-const sqliteDeviceSQL = `CREATE TABLE IF NOT EXISTS traffic_gate_device (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-device_id TEXT NOT NULL UNIQUE,
-device_sn TEXT,
-device_name TEXT,
-category TEXT,
-model TEXT,
-connection_status TEXT,
-work_status TEXT,
-region TEXT,
-address TEXT,
-longitude REAL DEFAULT 0,
-latitude REAL DEFAULT 0,
-owner_name TEXT,
-owner_phone TEXT,
-enabled INTEGER NOT NULL DEFAULT 1,
-latest_seen_at TEXT,
-last_reported_at TEXT,
-device_created_at TEXT,
-remark TEXT,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`
-
-const sqliteLogSQL = `CREATE TABLE IF NOT EXISTS traffic_ingest_log (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-source TEXT NOT NULL,
-topic TEXT,
-status TEXT NOT NULL,
-message TEXT,
-device_id TEXT,
-payload_hash TEXT,
-raw_payload TEXT,
-create_time INTEGER NOT NULL
-)`
-
-const sqliteStatusSQL = `CREATE TABLE IF NOT EXISTS traffic_ingest_status (
-source TEXT PRIMARY KEY,
-enabled INTEGER NOT NULL DEFAULT 0,
-connected INTEGER NOT NULL DEFAULT 0,
-topic TEXT,
-latest_received_at TEXT,
-today_received INTEGER NOT NULL DEFAULT 0,
-latest_error TEXT,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`

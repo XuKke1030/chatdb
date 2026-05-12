@@ -24,11 +24,10 @@ func (c *ControllerV1) SetDataBaseConfig(ctx context.Context, req *v1.SetDataBas
 	supportedTypes := map[string]bool{
 		"mysql":    true,
 		"postgres": true,
-		"sqlite":   true,
 	}
 
 	if !supportedTypes[req.DbType] {
-		return nil, gerror.Newf("不支持的数据库类型: %s, 支持的类型: mysql, postgres, sqlite", req.DbType)
+		return nil, gerror.Newf("不支持的数据库类型: %s, 支持的类型: mysql, postgres", req.DbType)
 	}
 
 	// 检查是否已存在相同配置
@@ -72,11 +71,10 @@ func (c *ControllerV1) UpdateDataBaseConfig(ctx context.Context, req *v1.UpdateD
 	supportedTypes := map[string]bool{
 		"mysql":    true,
 		"postgres": true,
-		"sqlite":   true,
 	}
 
 	if !supportedTypes[req.DbType] {
-		return nil, gerror.Newf("不支持的数据库类型: %s, 支持的类型: mysql, postgres, sqlite", req.DbType)
+		return nil, gerror.Newf("不支持的数据库类型: %s, 支持的类型: mysql, postgres", req.DbType)
 	}
 
 	// 检查配置是否存在

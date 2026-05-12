@@ -30,12 +30,38 @@ type UserPermissionsReq struct {
 }
 
 type UserPermissionsRes struct {
-	Authenticated bool                      `json:"authenticated"`
-	UserId        int64                     `json:"userId,omitempty"`
-	Username      string                    `json:"username,omitempty"`
-	RuleLevel     int                       `json:"ruleLevel"`
-	Permissions   []model.TopicItem         `json:"permissions"`
-	QaPermissions []UserKnowledgePermission `json:"qaPermissions"`
+	Authenticated     bool                      `json:"authenticated"`
+	UserId            int64                     `json:"userId,omitempty"`
+	Username          string                    `json:"username,omitempty"`
+	RuleLevel         int                       `json:"ruleLevel"`
+	PermissionVersion int                       `json:"permissionVersion"`
+	Permissions       []model.TopicItem         `json:"permissions"`
+	QaPermissions     []UserKnowledgePermission `json:"qaPermissions"`
+}
+
+type UserBootstrapReq struct {
+	g.Meta `path:"/user/bootstrap" method:"get" tags:"V1/鐢ㄦ埛" sm:"棣栧睆Bootstrap" dc:"鑾峰彇棣栧睆鎵€闇€鐨勭敤鎴枫€佹潈闄愩€佺儹闂ㄩ棶棰樺拰鍛婅鎽樿"`
+}
+
+type UserBootstrapRes struct {
+	Authenticated     bool                      `json:"authenticated"`
+	User              *model.User               `json:"user,omitempty"`
+	RuleLevel         int                       `json:"ruleLevel"`
+	PermissionVersion int                       `json:"permissionVersion"`
+	TopicPermissions  []model.TopicItem         `json:"topicPermissions"`
+	Topics            []model.TopicItem         `json:"topics"`
+	QaPermissions     []UserKnowledgePermission `json:"qaPermissions"`
+	KnowledgeBases    []UserKnowledgePermission `json:"knowledgeBases"`
+	PopularQuestions  []UserPopularQuestionItem `json:"popularQuestions"`
+	AlertSummary      UserAlertSummary          `json:"alertSummary"`
+}
+
+type UserAlertSummary struct {
+	Total    int               `json:"total"`
+	Critical int               `json:"critical"`
+	Warning  int               `json:"warning"`
+	ByTopic  map[string]int    `json:"byTopic"`
+	Latest   []model.AlertItem `json:"latest"`
 }
 
 type UserKnowledgePermission struct {

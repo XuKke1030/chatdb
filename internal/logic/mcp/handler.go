@@ -153,8 +153,11 @@ func (s *sMcpHandler) GetList() []model.McpReg {
 			Name:        "GetDatabaseInfo",
 			Description: "Get database information including type, name, and connection details",
 			ToolOptions: []mcp.ToolOption{
+				mcp.WithNumber("databaseId",
+					mcp.Description("ChatDB database configuration ID. Prefer this for business databases, e.g. 1"),
+				),
 				mcp.WithString("dbname",
-					mcp.Description("The database name to query (optional, uses default connection if omitted)"),
+					mcp.Description("Legacy GoFrame database group name. Numeric strings such as '1' are treated as databaseId."),
 				),
 			},
 			Fn: service.McpTool().GetDatabaseInfo,

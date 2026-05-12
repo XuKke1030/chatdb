@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"ai-chat-sql/internal/consts"
+	"ai-chat-sql/internal/logic/aidgp"
 	"bytes"
 	"context"
 	"encoding/csv"
@@ -10,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	v1 "ai-chat-sql/api/admin/v1"
@@ -25,17 +26,9 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-var (
-	adminEnsureMu    sync.Mutex
-	adminTablesReady bool
-)
-
 func (c *ControllerV1) AdminLogin(ctx context.Context, req *v1.AdminLoginReq) (res *v1.AdminLoginRes, err error) {
 	if req.Username == "" || req.Password == "" {
 		return nil, gerror.New("绠＄悊鍛樿处鍙峰拰瀵嗙爜涓嶈兘涓虹┖")
-	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
 	}
 	record, err := g.DB("master").Model("admin_account").Ctx(ctx).Where("username = ? AND enabled = ?", req.Username, 1).One()
 	if err != nil {
@@ -64,9 +57,6 @@ func (c *ControllerV1) AdminProfile(ctx context.Context, req *v1.AdminProfileReq
 }
 
 func (c *ControllerV1) AdminUsers(ctx context.Context, req *v1.AdminUsersReq) (res *v1.AdminUsersRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	users, err := listAdminUsers(ctx)
 	if err != nil {
 		return nil, err
@@ -75,18 +65,12 @@ func (c *ControllerV1) AdminUsers(ctx context.Context, req *v1.AdminUsersReq) (r
 }
 
 func (c *ControllerV1) AdminKnowledgeBases(ctx context.Context, req *v1.AdminKnowledgeBasesReq) (res *v1.AdminKnowledgeBasesRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	return &v1.AdminKnowledgeBasesRes{List: knowledgeBaseOptions(ctx)}, nil
 }
 
 func (c *ControllerV1) AdminUpdateUserPermissions(ctx context.Context, req *v1.AdminUpdateUserPermissionsReq) (res *v1.AdminUpdateUserPermissionsRes, err error) {
 	if req.Id <= 0 {
 		return nil, gerror.New("鐢ㄦ埛ID涓嶈兘涓虹┖")
-	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
 	}
 	ruleLevel := req.RuleLevel
 	if ruleLevel == 0 && len(req.Permissions) > 0 {
@@ -103,6 +87,10 @@ func (c *ControllerV1) AdminUpdateUserPermissions(ctx context.Context, req *v1.A
 	if err = replaceUserKnowledgePermissions(ctx, req.Id, req.QaPermissions); err != nil {
 		return nil, err
 	}
+	if err = bumpUserPermissionVersion(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	clearUserPermissionCache(ctx, req.Id)
 	_ = insertAdminLog(ctx, "admin", "admin", "权限更新", fmt.Sprintf("更新用户ID %d 的问数/问答权限", req.Id), "success")
 	user, err := getAdminUser(ctx, req.Id)
 	if err != nil {
@@ -115,12 +103,13 @@ func (c *ControllerV1) AdminUpdateUserStatus(ctx context.Context, req *v1.AdminU
 	if req.Id <= 0 {
 		return nil, gerror.New("鐢ㄦ埛ID涓嶈兘涓虹┖")
 	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	if err = upsertUserProfile(ctx, req.Id, g.Map{"enabled": boolToInt(req.Enabled), "update_time": int(gtime.Timestamp())}); err != nil {
 		return nil, err
 	}
+	if err = bumpUserPermissionVersion(ctx, req.Id); err != nil {
+		return nil, err
+	}
+	clearUserPermissionCache(ctx, req.Id)
 	_ = insertAdminLog(ctx, "admin", "admin", "账号状态", fmt.Sprintf("更新用户ID %d 状态为 %v", req.Id, req.Enabled), "success")
 	user, err := getAdminUser(ctx, req.Id)
 	if err != nil {
@@ -130,9 +119,6 @@ func (c *ControllerV1) AdminUpdateUserStatus(ctx context.Context, req *v1.AdminU
 }
 
 func (c *ControllerV1) AdminExampleQuestions(ctx context.Context, req *v1.AdminExampleQuestionsReq) (res *v1.AdminExampleQuestionsRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	query := g.DB("master").Model("admin_example_question").Ctx(ctx)
 	if req.Topic != "" {
 		query = query.Where("topic", req.Topic)
@@ -147,9 +133,6 @@ func (c *ControllerV1) AdminExampleQuestions(ctx context.Context, req *v1.AdminE
 func (c *ControllerV1) AdminCreateExampleQuestion(ctx context.Context, req *v1.AdminCreateExampleQuestionReq) (res *v1.AdminCreateExampleQuestionRes, err error) {
 	if req.Topic == "" || req.Question == "" {
 		return nil, gerror.New("topic and question are required")
-	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
 	}
 	now := int(gtime.Timestamp())
 	id, err := g.DB("master").Model("admin_example_question").Ctx(ctx).Data(g.Map{
@@ -176,9 +159,6 @@ func (c *ControllerV1) AdminUpdateExampleQuestion(ctx context.Context, req *v1.A
 	if req.Id <= 0 {
 		return nil, gerror.New("闂ID涓嶈兘涓虹┖")
 	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	_, err = g.DB("master").Model("admin_example_question").Ctx(ctx).Where("id = ?", req.Id).Data(g.Map{
 		"topic":       req.Topic,
 		"question":    req.Question,
@@ -202,18 +182,12 @@ func (c *ControllerV1) AdminDeleteExampleQuestion(ctx context.Context, req *v1.A
 	if req.Id <= 0 {
 		return nil, gerror.New("闂ID涓嶈兘涓虹┖")
 	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	_, err = g.DB("master").Model("admin_example_question").Ctx(ctx).Where("id = ?", req.Id).Delete()
 	_ = insertAdminLog(ctx, "admin", "admin", "示例问题", fmt.Sprintf("删除示例问题ID %d", req.Id), "success")
 	return &v1.AdminDeleteExampleQuestionRes{}, err
 }
 
 func (c *ControllerV1) AdminQuestionCandidates(ctx context.Context, req *v1.AdminQuestionCandidatesReq) (res *v1.AdminQuestionCandidatesRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	query := g.DB("master").Model("admin_question_candidate").Ctx(ctx)
 	if req.Status != "" {
 		query = query.Where("status", req.Status)
@@ -230,9 +204,6 @@ func (c *ControllerV1) AdminApproveQuestionCandidate(ctx context.Context, req *v
 }
 
 func (c *ControllerV1) AdminRejectQuestionCandidate(ctx context.Context, req *v1.AdminRejectQuestionCandidateReq) (res *v1.AdminRejectQuestionCandidateRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	if req.Id <= 0 {
 		return nil, gerror.New("鍊欓€夐棶棰業D涓嶈兘涓虹┖")
 	}
@@ -244,9 +215,6 @@ func (c *ControllerV1) AdminRejectQuestionCandidate(ctx context.Context, req *v1
 }
 
 func (c *ControllerV1) AdminDataSources(ctx context.Context, req *v1.AdminDataSourcesReq) (res *v1.AdminDataSourcesRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	records, err := g.DB("master").Model("admin_data_source").Ctx(ctx).OrderAsc("id").All()
 	if err != nil {
 		return nil, err
@@ -257,9 +225,6 @@ func (c *ControllerV1) AdminDataSources(ctx context.Context, req *v1.AdminDataSo
 func (c *ControllerV1) AdminUpdateDataSource(ctx context.Context, req *v1.AdminUpdateDataSourceReq) (res *v1.AdminUpdateDataSourceRes, err error) {
 	if req.Type == "" {
 		return nil, gerror.New("data source type is required")
-	}
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
 	}
 	status := req.Status
 	if status == "" {
@@ -287,9 +252,6 @@ func (c *ControllerV1) AdminUpdateDataSource(ctx context.Context, req *v1.AdminU
 }
 
 func (c *ControllerV1) AdminGridImportUpload(ctx context.Context, req *v1.AdminGridImportUploadReq) (res *v1.AdminGridImportUploadRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 
 	fileName := strings.TrimSpace(req.FileName)
 	month := strings.TrimSpace(req.Month)
@@ -397,9 +359,6 @@ func (c *ControllerV1) AdminGridImportUpload(ctx context.Context, req *v1.AdminG
 }
 
 func (c *ControllerV1) AdminGridImports(ctx context.Context, req *v1.AdminGridImportsReq) (res *v1.AdminGridImportsRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	records, err := g.DB("master").Model("admin_grid_import").Ctx(ctx).OrderDesc("create_time").All()
 	if err != nil {
 		return nil, err
@@ -408,9 +367,6 @@ func (c *ControllerV1) AdminGridImports(ctx context.Context, req *v1.AdminGridIm
 }
 
 func (c *ControllerV1) AdminGridImportDetail(ctx context.Context, req *v1.AdminGridImportDetailReq) (res *v1.AdminGridImportDetailRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	item, err := getGridImport(ctx, req.Id)
 	if err != nil {
 		return nil, err
@@ -419,9 +375,6 @@ func (c *ControllerV1) AdminGridImportDetail(ctx context.Context, req *v1.AdminG
 }
 
 func (c *ControllerV1) AdminGridImportErrors(ctx context.Context, req *v1.AdminGridImportErrorsReq) (res *v1.AdminGridImportErrorsRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	records, err := g.DB("master").Model("admin_grid_import_error").Ctx(ctx).Where("import_id = ?", req.Id).OrderAsc("row_index").All()
 	if err != nil {
 		return nil, err
@@ -429,10 +382,79 @@ func (c *ControllerV1) AdminGridImportErrors(ctx context.Context, req *v1.AdminG
 	return &v1.AdminGridImportErrorsRes{List: scanGridImportErrors(records)}, nil
 }
 
-func (c *ControllerV1) AdminLogs(ctx context.Context, req *v1.AdminLogsReq) (res *v1.AdminLogsRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
+func (c *ControllerV1) AdminSyncKnowledgeBases(ctx context.Context, req *v1.AdminSyncKnowledgeBasesReq) (res *v1.AdminSyncRes, err error) {
+	return executeAdminAidgpSync(ctx, aidgp.SyncKnowledgeBases, "")
+}
+
+func (c *ControllerV1) AdminSyncDocuments(ctx context.Context, req *v1.AdminSyncDocumentsReq) (res *v1.AdminSyncRes, err error) {
+	return executeAdminAidgpSync(ctx, aidgp.SyncDocuments, strings.TrimSpace(req.KnowledgeCode))
+}
+
+func (c *ControllerV1) AdminSyncGridData(ctx context.Context, req *v1.AdminSyncGridDataReq) (res *v1.AdminSyncRes, err error) {
+	return executeAdminAidgpSync(ctx, aidgp.SyncGridData, "")
+}
+
+func (c *ControllerV1) AdminSyncTrafficData(ctx context.Context, req *v1.AdminSyncTrafficDataReq) (res *v1.AdminSyncRes, err error) {
+	return executeAdminAidgpSync(ctx, aidgp.SyncTrafficData, "")
+}
+
+func (c *ControllerV1) AdminSyncPopulationData(ctx context.Context, req *v1.AdminSyncPopulationDataReq) (res *v1.AdminSyncRes, err error) {
+	return executeAdminAidgpSync(ctx, aidgp.SyncPopulationData, "")
+}
+
+func (c *ControllerV1) AdminSyncStatus(ctx context.Context, req *v1.AdminSyncStatusReq) (res *v1.AdminSyncStatusRes, err error) {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	provider := strings.TrimSpace(req.Provider)
+	if provider == "" {
+		provider = adminSyncProvider()
+	}
+	query := g.DB("master").Model("qa_sync_task").Ctx(ctx).
+		Fields("id, provider, sync_type, status, message, success_count, failure_count, skipped_count, started_at, finished_at, create_time, update_time")
+	if provider != "" {
+		query = query.Where("provider = ?", provider)
+	}
+	if syncType := strings.TrimSpace(req.SyncType); syncType != "" {
+		query = query.Where("sync_type = ?", syncType)
+	}
+	records, err := query.OrderDesc("id").Limit(limit).All()
+	if err != nil {
 		return nil, err
 	}
+	return &v1.AdminSyncStatusRes{
+		Provider: provider,
+		Enabled:  provider == aidgp.ProviderAidgp || provider == aidgp.ProviderMock,
+		List:     scanAdminSyncTasks(records),
+	}, nil
+}
+
+func (c *ControllerV1) AdminSyncLogs(ctx context.Context, req *v1.AdminSyncLogsReq) (res *v1.AdminSyncLogsRes, err error) {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	query := g.DB("master").Model("qa_sync_log").Ctx(ctx).
+		Fields("id, task_id, provider, sync_type, external_id, local_id, action, status, message, create_time").
+		Where("task_id = ?", req.TaskId)
+	if status := strings.TrimSpace(req.Status); status != "" {
+		query = query.Where("status = ?", status)
+	}
+	records, err := query.OrderAsc("id").Limit(limit).All()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminSyncLogsRes{TaskId: req.TaskId, List: scanAdminSyncLogs(records)}, nil
+}
+
+func (c *ControllerV1) AdminLogs(ctx context.Context, req *v1.AdminLogsReq) (res *v1.AdminLogsRes, err error) {
 	query := g.DB("master").Model("admin_operation_log").Ctx(ctx)
 	if req.LogType == "system" || req.LogType == "admin" {
 		query = query.Where("log_type = ?", req.LogType)
@@ -445,9 +467,6 @@ func (c *ControllerV1) AdminLogs(ctx context.Context, req *v1.AdminLogsReq) (res
 }
 
 func (c *ControllerV1) updateCandidateStatus(ctx context.Context, id int, status string) (*v1.AdminApproveQuestionCandidateRes, error) {
-	if err := ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 	if id <= 0 {
 		return nil, gerror.New("鍊欓€夐棶棰業D涓嶈兘涓虹┖")
 	}
@@ -458,42 +477,8 @@ func (c *ControllerV1) updateCandidateStatus(ctx context.Context, id int, status
 	return &v1.AdminApproveQuestionCandidateRes{Item: item}, nil
 }
 
-func ensureAdminTables(ctx context.Context) error {
-	adminEnsureMu.Lock()
-	defer adminEnsureMu.Unlock()
-	if adminTablesReady {
-		return nil
-	}
-	db := g.DB("master")
-	if err := createAdminTables(ctx, db); err != nil {
-		return err
-	}
-	// 修复 MySQL 表结构：raw_data 字段改为 LONGTEXT
-	dbType := ""
-	if cfg := db.GetConfig(); cfg != nil {
-		dbType = cfg.Type
-	}
-	migrateAdminTables(ctx, db, dbType)
-	if dbType != "sqlite" {
-		_, _ = db.Exec(ctx, "ALTER TABLE admin_grid_import_error MODIFY COLUMN raw_data LONGTEXT")
-	}
-	if err := seedAdminTables(ctx, db); err != nil {
-		return err
-	}
-	adminTablesReady = true
-	return nil
-}
-
-func createAdminTables(ctx context.Context, db gdb.DB) error {
-	dbType := ""
-	if cfg := db.GetConfig(); cfg != nil {
-		dbType = cfg.Type
-	}
-	sqls := sqliteAdminTableSQL()
-	if dbType != "sqlite" {
-		sqls = mysqlAdminTableSQL()
-	}
-	for _, sql := range sqls {
+func CreateAdminTables(ctx context.Context, db gdb.DB) error {
+	for _, sql := range mysqlAdminTableSQL() {
 		if _, err := db.Exec(ctx, sql); err != nil {
 			return err
 		}
@@ -501,125 +486,10 @@ func createAdminTables(ctx context.Context, db gdb.DB) error {
 	return nil
 }
 
-func migrateAdminTables(ctx context.Context, db gdb.DB, dbType string) {
-	if dbType == "sqlite" {
-		_, _ = db.Exec(ctx, "ALTER TABLE admin_user_profile ADD COLUMN display_name TEXT")
-		_, _ = db.Exec(ctx, "ALTER TABLE admin_user_profile ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0")
-		return
-	}
+func MigrateAdminTables(ctx context.Context, db gdb.DB) {
 	_, _ = db.Exec(ctx, "ALTER TABLE admin_user_profile ADD COLUMN display_name VARCHAR(64)")
 	_, _ = db.Exec(ctx, "ALTER TABLE admin_user_profile ADD COLUMN last_login_at INT NOT NULL DEFAULT 0")
-}
-
-func sqliteAdminTableSQL() []string {
-	return []string{
-		`CREATE TABLE IF NOT EXISTS admin_account (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-username TEXT NOT NULL UNIQUE,
-password TEXT NOT NULL,
-verify INTEGER NOT NULL,
-role TEXT NOT NULL DEFAULT 'administrator',
-enabled INTEGER NOT NULL DEFAULT 1,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_user_profile (
-user_id INTEGER PRIMARY KEY,
-department TEXT,
-enabled INTEGER NOT NULL DEFAULT 1,
-rule_level INTEGER NOT NULL DEFAULT 7,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_example_question (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-topic TEXT NOT NULL,
-question TEXT NOT NULL,
-description TEXT,
-enabled INTEGER NOT NULL DEFAULT 1,
-sort INTEGER NOT NULL DEFAULT 0,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_question_candidate (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-topic TEXT NOT NULL,
-question TEXT NOT NULL,
-status TEXT NOT NULL DEFAULT 'pending',
-count INTEGER NOT NULL DEFAULT 1,
-last_seen_at INTEGER NOT NULL,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_data_source (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-source_type TEXT NOT NULL UNIQUE,
-name TEXT NOT NULL,
-enabled INTEGER NOT NULL DEFAULT 0,
-status TEXT NOT NULL DEFAULT 'closed',
-latest_sync INTEGER NOT NULL DEFAULT 0,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_grid_import (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-month TEXT,
-file_name TEXT NOT NULL,
-status TEXT NOT NULL,
-total_rows INTEGER NOT NULL DEFAULT 0,
-success_rows INTEGER NOT NULL DEFAULT 0,
-failed_rows INTEGER NOT NULL DEFAULT 0,
-operator TEXT,
-create_time INTEGER NOT NULL,
-complete_time INTEGER NOT NULL DEFAULT 0
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_grid_import_error (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-import_id INTEGER NOT NULL,
-row_index INTEGER NOT NULL,
-reason TEXT NOT NULL,
-raw_data TEXT
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_knowledge_base (
-code TEXT PRIMARY KEY,
-name TEXT NOT NULL,
-enabled INTEGER NOT NULL DEFAULT 1,
-sort INTEGER NOT NULL DEFAULT 0,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_user_knowledge_permission (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-user_id INTEGER NOT NULL,
-knowledge_code TEXT NOT NULL,
-enabled INTEGER NOT NULL DEFAULT 0,
-create_time INTEGER NOT NULL,
-update_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS admin_operation_log (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-log_type TEXT NOT NULL,
-username TEXT NOT NULL,
-action_type TEXT NOT NULL,
-content TEXT,
-result TEXT NOT NULL DEFAULT 'success',
-create_time INTEGER NOT NULL
-)`,
-		`CREATE TABLE IF NOT EXISTS case_list (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-responsibility_unit TEXT,
-case_number TEXT,
-case_source TEXT,
-report_time TEXT,
-pending_step TEXT,
-case_type TEXT,
-region TEXT,
-case_location TEXT,
-description TEXT,
-create_time TEXT DEFAULT CURRENT_TIMESTAMP,
-update_time TEXT DEFAULT CURRENT_TIMESTAMP
-)`,
-	}
+	_, _ = db.Exec(ctx, "ALTER TABLE admin_user_profile ADD COLUMN permission_version INT NOT NULL DEFAULT 1")
 }
 
 func mysqlAdminTableSQL() []string {
@@ -639,6 +509,7 @@ user_id INT PRIMARY KEY,
 department VARCHAR(128),
 enabled TINYINT NOT NULL DEFAULT 1,
 rule_level INT NOT NULL DEFAULT 7,
+permission_version INT NOT NULL DEFAULT 1,
 create_time INT NOT NULL,
 update_time INT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -744,7 +615,7 @@ INDEX idx_case_type (case_type)
 	}
 }
 
-func seedAdminTables(ctx context.Context, db gdb.DB) error {
+func SeedAdminTables(ctx context.Context, db gdb.DB) error {
 	now := int(gtime.Timestamp())
 	if count, err := db.Model("admin_account").Ctx(ctx).Count(); err == nil && count == 0 {
 		verify := 8137
@@ -831,16 +702,17 @@ func listAdminUsers(ctx context.Context) ([]v1.AdminUserItem, error) {
 		}
 		lastLoginAt := maxInt(record["last_login_tme"].Int(), profile["last_login_at"].Int())
 		list = append(list, v1.AdminUserItem{
-			UserId:        id,
-			Username:      record["username"].String(),
-			DisplayName:   displayName,
-			Department:    profile["department"].String(),
-			Enabled:       enabled,
-			RuleLevel:     ruleLevel,
-			Permissions:   permissionsFromRuleLevel(ruleLevel),
-			QaPermissions: knowledgePermissionsForUser(ctx, id),
-			LastLoginAt:   lastLoginAt,
-			UpdateTime:    maxInt(record["update_time"].Int(), profile["update_time"].Int()),
+			UserId:            id,
+			Username:          record["username"].String(),
+			DisplayName:       displayName,
+			Department:        profile["department"].String(),
+			Enabled:           enabled,
+			RuleLevel:         ruleLevel,
+			PermissionVersion: profile["permission_version"].Int(),
+			Permissions:       permissionsFromRuleLevel(ruleLevel),
+			QaPermissions:     knowledgePermissionsForUser(ctx, id),
+			LastLoginAt:       lastLoginAt,
+			UpdateTime:        maxInt(record["update_time"].Int(), profile["update_time"].Int()),
 		})
 	}
 	return list, nil
@@ -856,7 +728,7 @@ func getAdminUser(ctx context.Context, id int) (v1.AdminUserItem, error) {
 			return user, nil
 		}
 	}
-	return v1.AdminUserItem{UserId: id, Enabled: true, RuleLevel: 7, Permissions: permissionsFromRuleLevel(7)}, nil
+	return v1.AdminUserItem{UserId: id, Enabled: true, RuleLevel: 7, PermissionVersion: 1, Permissions: permissionsFromRuleLevel(7)}, nil
 }
 
 func upsertUserProfile(ctx context.Context, userId int, data g.Map) error {
@@ -869,7 +741,7 @@ func upsertUserProfile(ctx context.Context, userId int, data g.Map) error {
 		_, err = g.DB("master").Model("admin_user_profile").Ctx(ctx).Where("user_id = ?", userId).Data(data).Update()
 		return err
 	}
-	insertData := g.Map{"user_id": userId, "department": "", "enabled": 1, "rule_level": 7, "create_time": now, "update_time": now}
+	insertData := g.Map{"user_id": userId, "department": "", "enabled": 1, "rule_level": 7, "permission_version": 1, "create_time": now, "update_time": now}
 	for key, value := range data {
 		insertData[key] = value
 	}
@@ -883,6 +755,27 @@ func getProfileMap(ctx context.Context, userId int) gdb.Record {
 		return gdb.Record{}
 	}
 	return record
+}
+
+func bumpUserPermissionVersion(ctx context.Context, userId int) error {
+	if userId <= 0 {
+		return nil
+	}
+	now := int(gtime.Timestamp())
+	record := getProfileMap(ctx, userId)
+	version := record["permission_version"].Int()
+	if version <= 0 {
+		version = 1
+	}
+	return upsertUserProfile(ctx, userId, g.Map{"permission_version": version + 1, "update_time": now})
+}
+
+func clearUserPermissionCache(ctx context.Context, userId int) {
+	if userId <= 0 {
+		return
+	}
+	_, _ = consts.Cache.Remove(ctx, fmt.Sprintf("user_permission:%d", userId))
+	_, _ = consts.Cache.Remove(ctx, fmt.Sprintf("user_bootstrap:%d", userId))
 }
 
 func ensureDefaultKnowledgePermissions(ctx context.Context, userId int, ruleLevel int, enabled bool) error {
@@ -1167,6 +1060,190 @@ func gridImportFromRecord(record gdb.Record) v1.GridImportItem {
 		CreateTime:   record["create_time"].Int(),
 		CompleteTime: record["complete_time"].Int(),
 	}
+}
+
+func executeAdminAidgpSync(ctx context.Context, syncType string, knowledgeCode string) (*v1.AdminSyncRes, error) {
+	provider := adminSyncProvider()
+	now := int(gtime.Timestamp())
+	taskId, err := insertAdminSyncTask(ctx, provider, syncType, "running", "同步任务已开始")
+	if err != nil {
+		return nil, err
+	}
+	client := adminAidgpClient(provider)
+	result, syncErr := callAdminAidgpSync(ctx, client, syncType, knowledgeCode)
+	status := "success"
+	message := result.Message
+	if syncErr != nil {
+		status = "failed"
+		message = syncErr.Error()
+		result.FailureCount++
+		result.Logs = append(result.Logs, aidgp.SyncLog{Action: "execute", Status: "failed", Message: syncErr.Error()})
+	} else if result.FailureCount > 0 {
+		status = "partial_failed"
+	} else if result.SuccessCount == 0 && result.SkippedCount > 0 {
+		status = "skipped"
+	}
+	if err = insertAdminSyncLogs(ctx, taskId, provider, syncType, result.Logs); err != nil {
+		return nil, err
+	}
+	finishedAt := int(gtime.Timestamp())
+	if err = finishAdminSyncTask(ctx, taskId, status, message, result.SuccessCount, result.FailureCount, result.SkippedCount, finishedAt); err != nil {
+		return nil, err
+	}
+	return &v1.AdminSyncRes{
+		TaskId:       taskId,
+		Provider:     provider,
+		SyncType:     syncType,
+		Status:       status,
+		Message:      message,
+		SuccessCount: result.SuccessCount,
+		FailureCount: result.FailureCount,
+		SkippedCount: result.SkippedCount,
+		StartedAt:    now,
+		FinishedAt:   finishedAt,
+		CreateTime:   now,
+		UpdateTime:   finishedAt,
+	}, nil
+}
+
+func adminSyncProvider() string {
+	if consts.Config == nil || consts.Config.QaConfig == nil || consts.Config.QaConfig.Sync == nil {
+		return aidgp.ProviderMock
+	}
+	provider := strings.TrimSpace(consts.Config.QaConfig.Sync.Provider)
+	if provider == "" {
+		return aidgp.ProviderMock
+	}
+	return provider
+}
+
+func adminAidgpClient(provider string) aidgp.Client {
+	cfg := aidgp.Config{Provider: provider}
+	if consts.Config != nil && consts.Config.QaConfig != nil && consts.Config.QaConfig.Sync != nil && consts.Config.QaConfig.Sync.Aidgp != nil {
+		aidgpCfg := consts.Config.QaConfig.Sync.Aidgp
+		cfg.BaseUrl = aidgpCfg.BaseUrl
+		cfg.AppKey = aidgpCfg.AppKey
+		cfg.AppSecret = aidgpCfg.AppSecret
+	}
+	return aidgp.NewClient(cfg)
+}
+
+func callAdminAidgpSync(ctx context.Context, client aidgp.Client, syncType string, knowledgeCode string) (aidgp.SyncResult, error) {
+	scope := aidgp.SyncScope{KnowledgeCode: knowledgeCode}
+	switch syncType {
+	case aidgp.SyncKnowledgeBases:
+		return client.SyncKnowledgeBases(ctx, scope)
+	case aidgp.SyncDocuments:
+		return client.SyncDocuments(ctx, scope)
+	case aidgp.SyncGridData:
+		return client.SyncGridData(ctx, scope)
+	case aidgp.SyncTrafficData:
+		return client.SyncTrafficData(ctx, scope)
+	case aidgp.SyncPopulationData:
+		return client.SyncPopulationData(ctx, scope)
+	default:
+		return aidgp.SyncResult{}, fmt.Errorf("unsupported sync type: %s", syncType)
+	}
+}
+
+func insertAdminSyncTask(ctx context.Context, provider string, syncType string, status string, message string) (int64, error) {
+	now := int(gtime.Timestamp())
+	return g.DB("master").Model("qa_sync_task").Ctx(ctx).Data(g.Map{
+		"provider":      provider,
+		"sync_type":     syncType,
+		"status":        status,
+		"message":       message,
+		"success_count": 0,
+		"failure_count": 0,
+		"skipped_count": 0,
+		"started_at":    now,
+		"finished_at":   0,
+		"create_time":   now,
+		"update_time":   now,
+	}).InsertAndGetId()
+}
+
+func finishAdminSyncTask(ctx context.Context, taskId int64, status string, message string, successCount int, failureCount int, skippedCount int, finishedAt int) error {
+	_, err := g.DB("master").Model("qa_sync_task").Ctx(ctx).
+		Where("id = ?", taskId).
+		Data(g.Map{
+			"status":        status,
+			"message":       message,
+			"success_count": successCount,
+			"failure_count": failureCount,
+			"skipped_count": skippedCount,
+			"finished_at":   finishedAt,
+			"update_time":   finishedAt,
+		}).
+		Update()
+	return err
+}
+
+func insertAdminSyncLogs(ctx context.Context, taskId int64, provider string, syncType string, logs []aidgp.SyncLog) error {
+	now := int(gtime.Timestamp())
+	if len(logs) == 0 {
+		logs = []aidgp.SyncLog{{Action: "execute", Status: "success", Message: "同步执行完成，无明细记录"}}
+	}
+	for _, item := range logs {
+		status := strings.TrimSpace(item.Status)
+		if status == "" {
+			status = "success"
+		}
+		if _, err := g.DB("master").Model("qa_sync_log").Ctx(ctx).Data(g.Map{
+			"task_id":     taskId,
+			"provider":    provider,
+			"sync_type":   syncType,
+			"external_id": item.ExternalId,
+			"local_id":    item.LocalId,
+			"action":      item.Action,
+			"status":      status,
+			"message":     item.Message,
+			"create_time": now,
+		}).Insert(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func scanAdminSyncTasks(records gdb.Result) []v1.AdminSyncTaskItem {
+	list := make([]v1.AdminSyncTaskItem, 0, len(records))
+	for _, record := range records {
+		list = append(list, v1.AdminSyncTaskItem{
+			TaskId:       record["id"].Int64(),
+			Provider:     record["provider"].String(),
+			SyncType:     record["sync_type"].String(),
+			Status:       record["status"].String(),
+			Message:      record["message"].String(),
+			SuccessCount: record["success_count"].Int(),
+			FailureCount: record["failure_count"].Int(),
+			SkippedCount: record["skipped_count"].Int(),
+			StartedAt:    record["started_at"].Int(),
+			FinishedAt:   record["finished_at"].Int(),
+			CreateTime:   record["create_time"].Int(),
+			UpdateTime:   record["update_time"].Int(),
+		})
+	}
+	return list
+}
+
+func scanAdminSyncLogs(records gdb.Result) []v1.AdminSyncLogItem {
+	list := make([]v1.AdminSyncLogItem, 0, len(records))
+	for _, record := range records {
+		list = append(list, v1.AdminSyncLogItem{
+			LogId:      record["id"].Int64(),
+			TaskId:     record["task_id"].Int64(),
+			Provider:   record["provider"].String(),
+			SyncType:   record["sync_type"].String(),
+			ExternalId: record["external_id"].String(),
+			LocalId:    record["local_id"].String(),
+			Action:     record["action"].String(),
+			Status:     record["status"].String(),
+			Message:    record["message"].String(),
+			CreateTime: record["create_time"].Int(),
+		})
+	}
+	return list
 }
 
 type gridParseError struct {
@@ -1487,9 +1564,6 @@ func maxInt(a int, b int) int {
 
 // AdminCaseList 查询案件列表
 func (c *ControllerV1) AdminCaseList(ctx context.Context, req *v1.AdminCaseListReq) (res *v1.AdminCaseListRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 
 	db := g.DB("master").Model("case_list")
 
@@ -1551,9 +1625,6 @@ func (c *ControllerV1) AdminCaseList(ctx context.Context, req *v1.AdminCaseListR
 
 // AdminCaseDelete 删除单个案件
 func (c *ControllerV1) AdminCaseDelete(ctx context.Context, req *v1.AdminCaseDeleteReq) (res *v1.AdminCaseDeleteRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 
 	_, err = g.DB("master").Model("case_list").Ctx(ctx).Where("id = ?", req.Id).Delete()
 	if err != nil {
@@ -1565,9 +1636,6 @@ func (c *ControllerV1) AdminCaseDelete(ctx context.Context, req *v1.AdminCaseDel
 
 // AdminCaseDeleteAll 删除所有案件
 func (c *ControllerV1) AdminCaseDeleteAll(ctx context.Context, req *v1.AdminCaseDeleteAllReq) (res *v1.AdminCaseDeleteAllRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 
 	result, err := g.DB("master").Model("case_list").Ctx(ctx).Delete()
 	if err != nil {
@@ -1580,9 +1648,6 @@ func (c *ControllerV1) AdminCaseDeleteAll(ctx context.Context, req *v1.AdminCase
 
 // AdminCaseStatistics 获取案件统计数据
 func (c *ControllerV1) AdminCaseStatistics(ctx context.Context, req *v1.AdminCaseStatisticsReq) (res *v1.AdminCaseStatisticsRes, err error) {
-	if err = ensureAdminTables(ctx); err != nil {
-		return nil, err
-	}
 
 	db := g.DB("master")
 

@@ -17,6 +17,10 @@ type IQaV1 interface {
 	SyncKnowledgeBases(ctx context.Context, req *v1.QaSyncReq) (res *v1.QaSyncRes, err error)
 	SyncDocuments(ctx context.Context, req *v1.QaSyncDocumentsReq) (res *v1.QaSyncRes, err error)
 	SyncPermissions(ctx context.Context, req *v1.QaSyncPermissionsReq) (res *v1.QaSyncRes, err error)
+	SyncGridData(ctx context.Context, req *v1.QaSyncGridDataReq) (res *v1.QaSyncRes, err error)
+	SyncTrafficData(ctx context.Context, req *v1.QaSyncTrafficDataReq) (res *v1.QaSyncRes, err error)
+	SyncPopulationData(ctx context.Context, req *v1.QaSyncPopulationDataReq) (res *v1.QaSyncRes, err error)
 	SyncStatus(ctx context.Context, req *v1.QaSyncStatusReq) (res *v1.QaSyncStatusRes, err error)
+	SyncLogs(ctx context.Context, req *v1.QaSyncLogsReq) (res *v1.QaSyncLogsRes, err error)
 	SessionReset(ctx context.Context, req *v1.SessionResetReq) (res *v1.SessionResetRes, err error)
 }

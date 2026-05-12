@@ -34,16 +34,17 @@ type AdminProfileRes struct {
 }
 
 type AdminUserItem struct {
-	UserId        int                   `json:"userId"`
-	Username      string                `json:"username"`
-	DisplayName   string                `json:"displayName"`
-	Department    string                `json:"department"`
-	Enabled       bool                  `json:"enabled"`
-	RuleLevel     int                   `json:"ruleLevel"`
-	Permissions   []TopicPermission     `json:"permissions"`
-	QaPermissions []KnowledgePermission `json:"qaPermissions"`
-	LastLoginAt   int                   `json:"lastLoginAt"`
-	UpdateTime    int                   `json:"updateTime"`
+	UserId            int                   `json:"userId"`
+	Username          string                `json:"username"`
+	DisplayName       string                `json:"displayName"`
+	Department        string                `json:"department"`
+	Enabled           bool                  `json:"enabled"`
+	RuleLevel         int                   `json:"ruleLevel"`
+	PermissionVersion int                   `json:"permissionVersion"`
+	Permissions       []TopicPermission     `json:"permissions"`
+	QaPermissions     []KnowledgePermission `json:"qaPermissions"`
+	LastLoginAt       int                   `json:"lastLoginAt"`
+	UpdateTime        int                   `json:"updateTime"`
 }
 
 type AdminUsersReq struct {
@@ -259,6 +260,82 @@ type AdminGridImportErrorsReq struct {
 
 type AdminGridImportErrorsRes struct {
 	List []GridImportErrorItem `json:"list"`
+}
+
+type AdminSyncKnowledgeBasesReq struct {
+	g.Meta `path:"/admin/sync/knowledge-bases" method:"post" tags:"V1/Admin" sm:"sync knowledge bases"`
+}
+
+type AdminSyncDocumentsReq struct {
+	g.Meta        `path:"/admin/sync/documents" method:"post" tags:"V1/Admin" sm:"sync documents"`
+	KnowledgeCode string `json:"knowledgeCode"`
+}
+
+type AdminSyncGridDataReq struct {
+	g.Meta `path:"/admin/sync/grid-data" method:"post" tags:"V1/Admin" sm:"sync grid data"`
+}
+
+type AdminSyncTrafficDataReq struct {
+	g.Meta `path:"/admin/sync/traffic-data" method:"post" tags:"V1/Admin" sm:"sync traffic data"`
+}
+
+type AdminSyncPopulationDataReq struct {
+	g.Meta `path:"/admin/sync/population-data" method:"post" tags:"V1/Admin" sm:"sync population data"`
+}
+
+type AdminSyncTaskItem struct {
+	TaskId       int64  `json:"taskId"`
+	Provider     string `json:"provider"`
+	SyncType     string `json:"syncType"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	SuccessCount int    `json:"successCount"`
+	FailureCount int    `json:"failureCount"`
+	SkippedCount int    `json:"skippedCount"`
+	StartedAt    int    `json:"startedAt"`
+	FinishedAt   int    `json:"finishedAt"`
+	CreateTime   int    `json:"createTime"`
+	UpdateTime   int    `json:"updateTime"`
+}
+
+type AdminSyncRes AdminSyncTaskItem
+
+type AdminSyncStatusReq struct {
+	g.Meta   `path:"/admin/sync/status" method:"get" tags:"V1/Admin" sm:"sync status"`
+	Limit    int    `json:"limit"`
+	Provider string `json:"provider"`
+	SyncType string `json:"syncType"`
+}
+
+type AdminSyncStatusRes struct {
+	Provider string              `json:"provider"`
+	Enabled  bool                `json:"enabled"`
+	List     []AdminSyncTaskItem `json:"list"`
+}
+
+type AdminSyncLogsReq struct {
+	g.Meta `path:"/admin/sync/tasks/{taskId}/logs" method:"get" tags:"V1/Admin" sm:"sync logs"`
+	TaskId int64  `json:"taskId" p:"taskId"`
+	Status string `json:"status"`
+	Limit  int    `json:"limit"`
+}
+
+type AdminSyncLogItem struct {
+	LogId      int64  `json:"logId"`
+	TaskId     int64  `json:"taskId"`
+	Provider   string `json:"provider"`
+	SyncType   string `json:"syncType"`
+	ExternalId string `json:"externalId"`
+	LocalId    string `json:"localId"`
+	Action     string `json:"action"`
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	CreateTime int    `json:"createTime"`
+}
+
+type AdminSyncLogsRes struct {
+	TaskId int64              `json:"taskId"`
+	List   []AdminSyncLogItem `json:"list"`
 }
 
 // CaseListItem ?????

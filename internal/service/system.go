@@ -13,6 +13,8 @@ type (
 	ISystemInit interface {
 		// Init 初始化
 		Init(ctx context.Context) (err error)
+		// InitDB 初始化数据库表结构和种子数据
+		InitDB(ctx context.Context) error
 		// CreatePrivateKey 创建私钥
 		CreatePrivateKey(ctx context.Context) (err error)
 	}

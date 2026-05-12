@@ -9,7 +9,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/cloudwego/eino-ext/components/tool/mcp"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
 	"github.com/cloudwego/eino/schema"
@@ -32,6 +31,15 @@ func NewAiChat() *sAiChat {
 // Chat 聊天
 func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan any) {
 	var err error
+	totalStart := time.Now()
+	stageStart := totalStart
+	logStage := func(stage string) {
+		consts.Logger.Infof(ctx, "perf ask_number_ai stage=%s topic=%s databaseId=%d sessionId=%s costMs=%d totalMs=%d", stage, in.Topic, in.DatabaseId, in.SessionId, time.Since(stageStart).Milliseconds(), time.Since(totalStart).Milliseconds())
+		stageStart = time.Now()
+	}
+	defer func() {
+		consts.Logger.Infof(ctx, "perf ask_number_ai stage=total topic=%s databaseId=%d sessionId=%s costMs=%d", in.Topic, in.DatabaseId, in.SessionId, time.Since(totalStart).Milliseconds())
+	}()
 	defer func() {
 		if err != nil {
 			respChan <- err
@@ -47,6 +55,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	}, respChan); err != nil {
 		return
 	}
+	logStage("send_start")
 	// 创建响应通道
 	HeartbeatCtx, cancel := context.WithCancel(ctx)
 	s.AiChatHeartbeat(HeartbeatCtx, respChan)
@@ -56,34 +65,30 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		cancel()
 		return
 	}
-	// 获取MCP工具
-	mcpTools, err := mcp.GetTools(ctx, &mcp.Config{
-		Cli: consts.McpClient,
-		ToolCallResultHandler: func(ctx context.Context, name string, result *gMcp.CallToolResult) (out *gMcp.CallToolResult, err error) {
-			dataMap := g.Map{
-				"name":   name,
-				"output": result.Content[0],
-			}
-			// SQL_Actuator 工具特殊处理，从请求参数中提取 SQL 语句
-			// 注意：这里需要从 context 中获取工具的输入参数
-			// 由于 result 中没有直接的输入信息，我们会在下一步通过拦截来实现
-			model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
-				Event: "tool_call",
-				Data:  dataMap,
-			}, respChan)
-			out = result
-			return
-		},
+	logStage("model")
+	// 获取MCP工具定义（带缓存），每次请求重新包装 handler，避免复用 respChan 闭包。
+	mcpTools, err := getCachedMCPTools(ctx, func(ctx context.Context, name string, result *gMcp.CallToolResult) (out *gMcp.CallToolResult, err error) {
+		dataMap := g.Map{
+			"name":   name,
+			"output": result.Content[0],
+		}
+		model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+			Event: "tool_call",
+			Data:  dataMap,
+		}, respChan)
+		out = result
+		return
 	})
 	if err != nil {
 		cancel()
 		return
 	}
+	logStage("mcp_tools")
 	// 创建React智能体
 	aiAgent, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: llm,
 		ToolsConfig:      compose.ToolsNodeConfig{Tools: mcpTools},
-		MaxStep:          50,
+		MaxStep:          8,
 		// 自定义 StreamToolCallChecker：DeepSeek 等模型会先输出文本再输出 tool calls
 		// 默认实现只检查第一个 chunk，会导致 tool calls 被忽略
 		StreamToolCallChecker: func(ctx context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
@@ -106,6 +111,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		cancel()
 		return
 	}
+	logStage("agent")
 	// 获取需要操作的数据库信息
 	dbTypeT, err := dao.DatabaseConf.Ctx(ctx).Cache(gdb.CacheOption{
 		Duration: 30 * time.Minute,
@@ -115,6 +121,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		cancel()
 		return
 	}
+	logStage("database_type")
 
 	prompt, err := service.Prompt().GetPrompt(ctx, consts.PromptMain)
 	if err != nil {
@@ -147,6 +154,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 			})
 		}
 	}
+	logStage("prompt")
 
 	for _, item := range in.History {
 		if item.Content == "" {
@@ -173,6 +181,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		cancel()
 		return
 	}
+	logStage("agent_stream")
 
 	// AI输出流
 	s.AiChatStreamOut(ctx, respChan, out, cancel)

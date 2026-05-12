@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/encoding/gjson"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -75,11 +77,28 @@ func (s *sMcpTool) GetDatabaseInfo(ctx context.Context, request mcp.CallToolRequ
 		}
 	}()
 
-	// 可选的数据库名称参数，未提供时使用默认连接
+	// Prefer databaseId because ChatDB stores business databases in
+	// database_conf. Keep dbname for legacy GoFrame group-name calls.
+	databaseId := request.GetInt("databaseId", 0)
 	dbname := request.GetString("dbname", "")
+	if databaseId == 0 && strings.TrimSpace(dbname) != "" {
+		if id, convErr := strconv.Atoi(strings.TrimSpace(dbname)); convErr == nil {
+			databaseId = id
+			dbname = ""
+		}
+	}
 
-	// 获取数据库配置信息，先检查 DB 对象是否为 nil
-	db := g.DB(dbname)
+	var db gdb.DB
+	if databaseId > 0 {
+		db, err = service.Config().GetDataBase(ctx, databaseId)
+	} else {
+		db, err = getConfiguredGroupDB(dbname)
+	}
+	if err != nil {
+		out = mcp.NewToolResultText(fmt.Sprintf("数据库配置错误：%s", err.Error()))
+		err = nil
+		return
+	}
 	if db == nil {
 		err = errors.New("数据库连接不存在，请检查数据库配置")
 		return
@@ -93,45 +112,49 @@ func (s *sMcpTool) GetDatabaseInfo(ctx context.Context, request mcp.CallToolRequ
 
 	// 构建数据库信息
 	dbInfo := g.Map{
+		"databaseId":   databaseId,
 		"databaseType": dbConfig.Type,
 		"host":         extractHostFromLink(dbConfig.Link),
 		"port":         extractPortFromLink(dbConfig.Link),
 		"databaseName": extractDatabaseNameFromLink(dbConfig.Link),
 		"username":     extractUsernameFromLink(dbConfig.Link),
 		"prefix":       dbConfig.Prefix,
-		"createdAt":    dbConfig.CreatedAt,
-		"updatedAt":    dbConfig.UpdatedAt,
 		"debug":        dbConfig.Debug,
 	}
+	databaseName := extractDatabaseNameFromLink(dbConfig.Link)
 
 	// 测试连接并获取数据库版本信息
 	versionQuery := getVersionQuery(dbConfig.Type)
 	if versionQuery != "" {
-		queryDb := g.DB(dbname)
-		if queryDb != nil {
-			sqlOut, queryErr := queryDb.Query(ctx, versionQuery)
-			if queryErr == nil && sqlOut != nil && len(sqlOut.List()) > 0 {
-				versionInfo := sqlOut.List()[0]
-				dbInfo["version"] = versionInfo
-			}
+		sqlOut, queryErr := db.Query(ctx, versionQuery)
+		if queryErr == nil && sqlOut != nil && len(sqlOut.List()) > 0 {
+			versionInfo := sqlOut.List()[0]
+			dbInfo["version"] = versionInfo
 		}
 	}
 
 	// 获取数据库大小（如果支持）
-	sizeQuery := getSizeQuery(dbConfig.Type, dbname)
+	sizeQuery := getSizeQuery(dbConfig.Type, databaseName)
 	if sizeQuery != "" {
-		queryDb := g.DB(dbname)
-		if queryDb != nil {
-			sqlOut, queryErr := queryDb.Query(ctx, sizeQuery)
-			if queryErr == nil && sqlOut != nil && len(sqlOut.List()) > 0 {
-				sizeInfo := sqlOut.List()[0]
-				dbInfo["databaseSize"] = sizeInfo
-			}
+		sqlOut, queryErr := db.Query(ctx, sizeQuery)
+		if queryErr == nil && sqlOut != nil && len(sqlOut.List()) > 0 {
+			sizeInfo := sqlOut.List()[0]
+			dbInfo["databaseSize"] = sizeInfo
 		}
 	}
 
 	out = mcp.NewToolResultText(gjson.MustEncodeString(dbInfo))
 	return
+}
+
+func getConfiguredGroupDB(dbname string) (db gdb.DB, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			db = nil
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return g.DB(dbname), nil
 }
 
 // 从连接字符串中提取主机地址
@@ -238,8 +261,6 @@ func getVersionQuery(dbType string) string {
 		return "SELECT VERSION() as version"
 	case "postgresql", "postgres":
 		return "SELECT version() as version"
-	case "sqlite":
-		return "SELECT sqlite_version() as version"
 	case "mssql", "sqlserver":
 		return "SELECT @@VERSION as version"
 	default:
@@ -254,8 +275,6 @@ func getSizeQuery(dbType, dbname string) string {
 		return fmt.Sprintf("SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)' FROM information_schema.tables WHERE table_schema = '%s'", dbname)
 	case "postgresql", "postgres":
 		return fmt.Sprintf("SELECT pg_size_pretty(pg_database_size('%s')) as size", dbname)
-	case "sqlite":
-		return "SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()"
 	default:
 		return ""
 	}
@@ -302,11 +321,6 @@ func isReadOnlySQL(sql string) bool {
 
 	// 检查是否为EXPLAIN语句
 	if strings.HasPrefix(sql, "EXPLAIN") {
-		return true
-	}
-
-	// 检查是否为PRAGMA语句（SQLite的PRAGMA语句通常是只读的）
-	if strings.HasPrefix(sql, "PRAGMA") {
 		return true
 	}
 

@@ -165,12 +165,27 @@ type QaSyncPermissionsReq struct {
 	KnowledgeCode string `json:"knowledgeCode" dc:"知识库编码"`
 }
 
+type QaSyncGridDataReq struct {
+	g.Meta `path:"/qa/sync/grid-data" method:"post" tags:"V1/同步" sm:"同步网格数据" dc:"触发 AIDGP 网格数据同步任务"`
+}
+
+type QaSyncTrafficDataReq struct {
+	g.Meta `path:"/qa/sync/traffic-data" method:"post" tags:"V1/同步" sm:"同步车流数据" dc:"触发 AIDGP 车流数据同步任务"`
+}
+
+type QaSyncPopulationDataReq struct {
+	g.Meta `path:"/qa/sync/population-data" method:"post" tags:"V1/同步" sm:"同步人流数据" dc:"触发 AIDGP 人流数据同步任务；格式未配置时只记录跳过日志"`
+}
+
 type QaSyncRes struct {
-	TaskId   int64  `json:"taskId"`
-	Provider string `json:"provider"`
-	SyncType string `json:"syncType"`
-	Status   string `json:"status"`
-	Message  string `json:"message"`
+	TaskId       int64  `json:"taskId"`
+	Provider     string `json:"provider"`
+	SyncType     string `json:"syncType"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	SuccessCount int    `json:"successCount"`
+	FailureCount int    `json:"failureCount"`
+	SkippedCount int    `json:"skippedCount"`
 }
 
 type QaSyncStatusReq struct {
@@ -181,19 +196,49 @@ type QaSyncStatusReq struct {
 }
 
 type QaSyncTaskItem struct {
-	TaskId     int64  `json:"taskId"`
-	Provider   string `json:"provider"`
-	SyncType   string `json:"syncType"`
-	Status     string `json:"status"`
-	Message    string `json:"message"`
-	CreateTime int    `json:"createTime"`
-	UpdateTime int    `json:"updateTime"`
+	TaskId       int64  `json:"taskId"`
+	Provider     string `json:"provider"`
+	SyncType     string `json:"syncType"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	SuccessCount int    `json:"successCount"`
+	FailureCount int    `json:"failureCount"`
+	SkippedCount int    `json:"skippedCount"`
+	StartedAt    int    `json:"startedAt"`
+	FinishedAt   int    `json:"finishedAt"`
+	CreateTime   int    `json:"createTime"`
+	UpdateTime   int    `json:"updateTime"`
 }
 
 type QaSyncStatusRes struct {
 	Provider string           `json:"provider"`
 	Enabled  bool             `json:"enabled"`
 	List     []QaSyncTaskItem `json:"list"`
+}
+
+type QaSyncLogsReq struct {
+	g.Meta `path:"/qa/sync/tasks/{taskId}/logs" method:"get" tags:"V1/同步" sm:"同步日志" dc:"查询同步任务明细日志"`
+	TaskId int64  `json:"taskId" in:"path" v:"required#任务ID不能为空"`
+	Status string `json:"status" dc:"按日志状态过滤：success/skipped/failed"`
+	Limit  int    `json:"limit" dc:"返回条数，默认50，最大200"`
+}
+
+type QaSyncLogItem struct {
+	LogId      int64  `json:"logId"`
+	TaskId     int64  `json:"taskId"`
+	Provider   string `json:"provider"`
+	SyncType   string `json:"syncType"`
+	ExternalId string `json:"externalId"`
+	LocalId    string `json:"localId"`
+	Action     string `json:"action"`
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	CreateTime int    `json:"createTime"`
+}
+
+type QaSyncLogsRes struct {
+	TaskId int64           `json:"taskId"`
+	List   []QaSyncLogItem `json:"list"`
 }
 
 type SessionResetReq struct {

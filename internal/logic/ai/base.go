@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino-ext/components/model/deepseek"
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -15,6 +16,8 @@ import (
 )
 
 type sAI struct {
+	mu         sync.RWMutex
+	modelCache map[string]einoModel.ToolCallingChatModel
 }
 
 func init() {
@@ -22,16 +25,44 @@ func init() {
 }
 
 func NewAI() *sAI {
-	return &sAI{}
+	return &sAI{
+		modelCache: make(map[string]einoModel.ToolCallingChatModel),
+	}
 }
 
-// GetChatModel 获取聊天模型
+// GetChatModel 获取聊天模型（带缓存）
 func (s *sAI) GetChatModel(ai, model string) (chatModel einoModel.ToolCallingChatModel, err error) {
+	if model == "" {
+		switch ai {
+		case "openai":
+			model = "gpt-4o-mini"
+		case "deepseek":
+			model = "deepseek-chat"
+		}
+	}
+	key := ai + ":" + model
+
+	s.mu.RLock()
+	if cached, ok := s.modelCache[key]; ok {
+		s.mu.RUnlock()
+		return cached, nil
+	}
+	s.mu.RUnlock()
+
+	chatModel, err = s.createChatModel(ai, model)
+	if err != nil {
+		return
+	}
+
+	s.mu.Lock()
+	s.modelCache[key] = chatModel
+	s.mu.Unlock()
+	return
+}
+
+func (s *sAI) createChatModel(ai, model string) (chatModel einoModel.ToolCallingChatModel, err error) {
 	switch ai {
 	case "openai":
-		if model == "" {
-			model = "gpt-4o-mini"
-		}
 		if err = validateAIProviderConfig("openai", consts.Config.AiConfig.OpenAI.BaseUrl, consts.Config.AiConfig.OpenAI.Key); err != nil {
 			return
 		}
@@ -42,9 +73,6 @@ func (s *sAI) GetChatModel(ai, model string) (chatModel einoModel.ToolCallingCha
 		})
 		return
 	case "deepseek":
-		if model == "" {
-			model = "deepseek-chat"
-		}
 		if err = validateAIProviderConfig("deepseek", consts.Config.AiConfig.DeepSeek.BaseUrl, consts.Config.AiConfig.DeepSeek.Key); err != nil {
 			return
 		}
