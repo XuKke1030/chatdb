@@ -58,15 +58,36 @@ func (r *FastPathRouter) Match(req *v1.ChatReq) (*FastPathIntent, bool) {
 	if fp == nil {
 		return nil, false
 	}
+	// 参数提取：context 后续从 controller 层注入，这里用 background 仅做卡口名称匹配
+	params := ExtractFastPathParams(context.Background(), req.Topic, req.Message)
+	fp.params = params
 	return &FastPathIntent{
 		Intent:     fastPathIntentName(fp.kind),
 		Topic:      req.Topic,
 		Question:   req.Message,
 		DatabaseId: req.DatabaseId,
 		Cacheable:  true,
-		Params:     map[string]any{},
+		Params:     paramsToMap(params),
 		legacy:     fp,
 	}, true
+}
+
+// paramsToMap 将 ExtractedParams 转为 map[string]any 用于缓存 key
+func paramsToMap(p ExtractedParams) map[string]any {
+	m := map[string]any{}
+	if p.GateName != "" {
+		m["gateName"] = p.GateName
+	}
+	if p.RegionName != "" {
+		m["regionName"] = p.RegionName
+	}
+	if p.CompareRef != "" {
+		m["compareRef"] = p.CompareRef
+	}
+	if p.Days > 0 && p.Days != 7 {
+		m["days"] = p.Days
+	}
+	return m
 }
 
 func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPathResult, error) {
@@ -196,10 +217,14 @@ func fastPathChartRule(fp *fastPath, chartData string) string {
 	switch fp.kind {
 	case fpTrafficWeek, fpPopWeekTrend:
 		return "line_trend"
-	case fpTrafficTopGateToday, fpTrafficGateRank, fpTrafficForeignOrigin, fpPopRegionRank, fpGridRegionRank:
+	case fpTrafficTopGateToday, fpTrafficGateRank, fpTrafficForeignOrigin, fpPopRegionRank, fpGridRegionRank, fpTrafficDwellTop:
 		return "bar_rank"
 	case fpTrafficWeekendCompare, fpTrafficHolidayCompare:
 		return "bar_compare"
+	case fpPopHourlyTrend:
+		return "line_trend"
+	case fpGridCaseTypeDist:
+		return "pie"
 	default:
 		return "chart"
 	}
@@ -223,18 +248,24 @@ func fastPathIntentName(kind fastPathKind) string {
 		return "traffic.compare.holiday_workday"
 	case fpTrafficForeignOrigin:
 		return "traffic.rank.foreign_origin"
+	case fpTrafficDwellTop:
+		return "traffic.dwell.top"
 	case fpPopWeekTrend:
 		return "population.trend.recent_days"
 	case fpPopHolidayCompare:
 		return "population.compare.holiday"
 	case fpPopRegionRank:
 		return "population.rank.region"
+	case fpPopHourlyTrend:
+		return "population.trend.hourly"
 	case fpGridCaseCount:
 		return "grid.case.count"
 	case fpGridCloseRate:
 		return "grid.case.close_rate"
 	case fpGridRegionRank:
 		return "grid.rank.region"
+	case fpGridCaseTypeDist:
+		return "grid.case.type_dist"
 	default:
 		return "unknown"
 	}

@@ -92,12 +92,14 @@ type TrafficPlateRecognition struct {
 }
 
 type TrafficAggregateQuery struct {
-	DateFrom string
-	DateTo   string
-	DeviceId string
-	Plate    string
-	GroupBy  string
-	Holiday  string
+	DateFrom    string
+	DateTo      string
+	DeviceId    string
+	Plate       string
+	GroupBy     string
+	Holiday     string
+	GateName    string // 卡口名称过滤
+	PlateRegion string // 区域名称过滤
 }
 
 type TrafficAggregateSummary struct {

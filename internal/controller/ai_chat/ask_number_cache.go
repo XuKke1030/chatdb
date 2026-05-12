@@ -237,6 +237,11 @@ func intentDateRangeHash(intent string) string {
 	case strings.Contains(intent, "rank"):
 		from := now.AddDate(0, 0, -6).Format("Ymd")
 		return from + "_" + today
+	case strings.Contains(intent, "hourly"):
+		return today
+	case strings.Contains(intent, "dwell"):
+		from := now.AddDate(0, 0, -6).Format("Ymd")
+		return from + "_" + today
 	default:
 		return today
 	}
@@ -274,6 +279,12 @@ func intentTTL(intent string) time.Duration {
 		return 2 * time.Minute
 	case strings.Contains(intent, "ratio"):
 		return 1 * time.Minute
+	case strings.Contains(intent, "hourly"):
+		return 45 * time.Second
+	case strings.Contains(intent, "dwell"):
+		return 5 * time.Minute
+	case strings.Contains(intent, "type_dist"):
+		return 5 * time.Minute
 	default:
 		return 2 * time.Minute
 	}

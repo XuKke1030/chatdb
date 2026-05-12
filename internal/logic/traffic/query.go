@@ -16,6 +16,7 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 	db := g.DB("master")
 
 	base := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "")
+	base = applyTrafficExtraFilters(base, query.GateName, query.PlateRegion)
 	summaryRecord, err := base.Fields(trafficCountFields()).One()
 	if err != nil {
 		return nil, err
@@ -23,7 +24,9 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 	summary := aggregateSummaryFromRecord(summaryRecord)
 
 	groupExpr := trafficGroupExpr(groupBy)
-	seriesRecords, err := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "").
+	seriesModel := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "")
+	seriesModel = applyTrafficExtraFilters(seriesModel, query.GateName, query.PlateRegion)
+	seriesRecords, err := seriesModel.
 		Fields(fmt.Sprintf("%s AS name, %s", groupExpr, trafficCountFields())).
 		Group("name").
 		Order(trafficGroupOrder(groupBy)).
@@ -47,6 +50,17 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 		Series:  series,
 		GroupBy: groupBy,
 	}, nil
+}
+
+// applyTrafficExtraFilters 应用卡口名称和区域名称过滤
+func applyTrafficExtraFilters(m *gdb.Model, gateName string, plateRegion string) *gdb.Model {
+	if gateName := strings.TrimSpace(gateName); gateName != "" {
+		m = m.Where("device_name LIKE ?", "%"+gateName+"%")
+	}
+	if plateRegion := strings.TrimSpace(plateRegion); plateRegion != "" {
+		m = m.Where("(plate_region_type LIKE ? OR device_name LIKE ?)", "%"+plateRegion+"%", "%"+plateRegion+"%")
+	}
+	return m
 }
 
 func (s *sTraffic) ListRecords(ctx context.Context, query model.TrafficRecordQuery) (*model.TrafficRecordListResult, error) {

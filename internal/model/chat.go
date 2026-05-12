@@ -33,6 +33,12 @@ type ChatOutDataItem struct {
 	CreateTime int64  `json:"createTime"`
 }
 
+// ClarificationData 澄清选项数据，用于 SSE clarification 事件
+type ClarificationData struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options"`
+}
+
 func GenChatOutDataItem(ctx context.Context, in ChatOutDataItem) ChatOutDataItem {
 	in.TraceId = gctx.CtxId(ctx)
 	in.CreateTime = gtime.TimestampMilli()
