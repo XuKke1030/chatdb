@@ -17,6 +17,7 @@ type (
 		GetIngestStatus(ctx context.Context) (*model.TrafficIngestStatusOutput, error)
 		SaveGateRecord(ctx context.Context, in model.TrafficGateRecordInput) (bool, error)
 		UpsertGateDevice(ctx context.Context, in model.TrafficGateDeviceInput) error
+		RefreshAggregates(ctx context.Context, dateFrom string, dateTo string) error
 		WriteIngestLog(ctx context.Context, in model.TrafficIngestLogInput) error
 		UpdateIngestStatus(ctx context.Context, in model.TrafficIngestStatusInput) error
 	}

@@ -24,6 +24,21 @@ type ChatSessionResetRes struct {
 	SessionId string `json:"sessionId"`
 }
 
+type ChatSessionCreateReq struct {
+	g.Meta  `path:"/chats/sessions" method:"post" tags:"V1/聊天" sm:"创建问数会话" dc:"按主题创建或初始化问数会话"`
+	Topic   string `json:"topic" v:"required#主题不能为空" dc:"主题：grid|population|traffic"`
+	Source  string `json:"source" dc:"来源：topic_entry|topic_alert"`
+	AlertId int    `json:"alertId" dc:"告警ID"`
+}
+
+type ChatSessionCreateRes struct {
+	SessionId          string   `json:"sessionId"`
+	Topic              string   `json:"topic"`
+	Title              string   `json:"title"`
+	SuggestedQuestions []string `json:"suggestedQuestions"`
+	InputPlaceholder   string   `json:"inputPlaceholder"`
+}
+
 type GridMajorCaseAnalysisReq struct {
 	g.Meta `path:"/grid/major-case-analysis" method:"get" tags:"V1/问数" sm:"重大案件分析" dc:"按影响度/难度对网格案件排序，返回Top1案件信息及评分依据"`
 	Metric string `json:"metric" in:"query" dc:"排序口径：combined|impact|difficulty，默认combined"`
@@ -31,9 +46,10 @@ type GridMajorCaseAnalysisReq struct {
 }
 
 type GridMajorCaseAnalysisRes struct {
-	Metric string        `json:"metric"`
-	Case   MajorCaseItem `json:"case"`
-	Basis  []string      `json:"basis"`
+	Metric     string        `json:"metric"`
+	Case       MajorCaseItem `json:"case"`
+	Basis      []string      `json:"basis"`
+	Suggestion []string      `json:"suggestion"`
 }
 
 type MajorCaseItem struct {
@@ -50,6 +66,9 @@ type MajorCaseItem struct {
 	Description        string   `json:"description"`
 	ImpactScore        int      `json:"impactScore"`
 	DifficultyScore    int      `json:"difficultyScore"`
+	TimeRiskScore      int      `json:"timeRiskScore"`
 	TotalScore         int      `json:"totalScore"`
+	Level              string   `json:"level"`
 	Reasons            []string `json:"reasons"`
+	Suggestion         []string `json:"suggestion"`
 }

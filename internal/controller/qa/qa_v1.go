@@ -1331,6 +1331,17 @@ func qaAidgpClient(provider string) aidgp.Client {
 		cfg.BaseUrl = aidgpCfg.BaseUrl
 		cfg.AppKey = aidgpCfg.AppKey
 		cfg.AppSecret = aidgpCfg.AppSecret
+		cfg.TokenPath = aidgpCfg.TokenPath
+		cfg.TrafficQueryPath = aidgpCfg.TrafficQueryPath
+		cfg.PopulationQueryPath = aidgpCfg.PopulationQueryPath
+		cfg.GridQueryPath = aidgpCfg.GridQueryPath
+		cfg.KnowledgeBasesPath = aidgpCfg.KnowledgeBasesPath
+		cfg.DocumentsPath = aidgpCfg.DocumentsPath
+		cfg.DocumentSegmentsPath = aidgpCfg.DocumentSegmentsPath
+		cfg.KnowledgePermissionsPath = aidgpCfg.KnowledgePermissionsPath
+		cfg.TimeoutSeconds = aidgpCfg.TimeoutSeconds
+		cfg.RetryTimes = aidgpCfg.RetryTimes
+		cfg.TokenExpireSkewSeconds = aidgpCfg.TokenExpireSkewSeconds
 	}
 	return aidgp.NewClient(cfg)
 }

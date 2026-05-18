@@ -4,18 +4,18 @@ type ConfigData struct {
 	Server   *ServerConfig  `json:"server"`
 	AiConfig *AiConfig      `json:"ai"`
 	QaConfig *QaConfig      `json:"qa"`
-	Jwt      []*JwtOption   `json:"jwt" dc:"JWT配置"`
-	DbConfig *DbConfig      `json:"db" dc:"数据库配置"`
+	Uiap     *UiapConfig    `json:"uiap"`
+	Jwt      []*JwtOption   `json:"jwt" dc:"JWT config"`
+	DbConfig *DbConfig      `json:"db" dc:"database config"`
 	Traffic  *TrafficConfig `json:"traffic"`
-	Redis    *RedisConfig   `json:"redis" dc:"Redis缓存配置"`
+	Redis    *RedisConfig   `json:"redis" dc:"Redis cache config"`
 }
 
-// ServerConfig 服务配置
 type ServerConfig struct {
-	Address     string `json:"address" sm:"地址" dc:"服务器监听地址，格式如: ':8000'"`
-	Mode        string `json:"mode" sm:"运行模式" dc:"运行模式，可选值：debug, release"`
-	OpenapiPath string `json:"openapiPath" sm:"OpenAPI路径" dc:"OpenAPI文档的访问路径，例：'/api.json'"`
-	SwaggerPath string `json:"swaggerPath" sm:"Swagger路径" dc:"Swagger UI的访问路径，例：'/swagger'"`
+	Address     string `json:"address" sm:"address"`
+	Mode        string `json:"mode" sm:"mode"`
+	OpenapiPath string `json:"openapiPath" sm:"OpenAPI path"`
+	SwaggerPath string `json:"swaggerPath" sm:"Swagger path"`
 }
 
 func (t *ConfigData) IsDebug() (ok bool) {
@@ -70,14 +70,39 @@ type QaSyncConfig struct {
 }
 
 type QaAidgpConfig struct {
-	BaseUrl   string `json:"baseUrl"`
-	AppKey    string `json:"appKey"`
-	AppSecret string `json:"appSecret"`
+	BaseUrl                  string `json:"baseUrl"`
+	AppKey                   string `json:"appKey"`
+	AppSecret                string `json:"appSecret"`
+	TokenPath                string `json:"tokenPath"`
+	TrafficQueryPath         string `json:"trafficQueryPath"`
+	PopulationQueryPath      string `json:"populationQueryPath"`
+	GridQueryPath            string `json:"gridQueryPath"`
+	KnowledgeBasesPath       string `json:"knowledgeBasesPath"`
+	DocumentsPath            string `json:"documentsPath"`
+	DocumentSegmentsPath     string `json:"documentSegmentsPath"`
+	KnowledgePermissionsPath string `json:"knowledgePermissionsPath"`
+	TimeoutSeconds           int    `json:"timeoutSeconds"`
+	RetryTimes               int    `json:"retryTimes"`
+	TokenExpireSkewSeconds   int    `json:"tokenExpireSkewSeconds"`
 }
 
-// DbConfig 数据库配置
+type UiapConfig struct {
+	Enabled                       bool   `json:"enabled"`
+	BaseUrl                       string `json:"baseUrl"`
+	ClientId                      string `json:"clientId"`
+	ClientSecret                  string `json:"clientSecret"`
+	TokenPath                     string `json:"tokenPath"`
+	UserInfoPath                  string `json:"userInfoPath"`
+	PermissionPath                string `json:"permissionPath"`
+	BatchPermissionPath           string `json:"batchPermissionPath"`
+	TimeoutSeconds                int    `json:"timeoutSeconds"`
+	TokenExpireSkewSeconds        int    `json:"tokenExpireSkewSeconds"`
+	PermissionPollIntervalSeconds int    `json:"permissionPollIntervalSeconds"`
+	PermissionPollPageSize        int    `json:"permissionPollPageSize"`
+}
+
 type DbConfig struct {
-	Readonly bool `json:"readonly" dc:"是否启用只读模式，启用后只允许执行查询操作（SELECT语句）"`
+	Readonly bool `json:"readonly" dc:"read-only mode"`
 }
 
 type TrafficConfig struct {
@@ -101,9 +126,8 @@ type TrafficIngestConfig struct {
 	NoDataWarnMinutes    int `json:"noDataWarnMinutes"`
 }
 
-// RedisConfig Redis缓存配置
 type RedisConfig struct {
-	Address  string `json:"address" dc:"Redis地址，如 127.0.0.1:6379"`
-	Password string `json:"password" dc:"Redis密码"`
-	Db       int    `json:"db" dc:"Redis数据库编号"`
+	Address  string `json:"address" dc:"Redis address"`
+	Password string `json:"password" dc:"Redis password"`
+	Db       int    `json:"db" dc:"Redis database number"`
 }

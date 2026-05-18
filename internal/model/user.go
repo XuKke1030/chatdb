@@ -20,8 +20,14 @@ type User struct {
 }
 
 type TopicItem struct {
-	Label      string `json:"label"`
-	Value      string `json:"value"`
-	Permission int    `json:"permission"`
-	Enabled    bool   `json:"enabled"`
+	Label            string `json:"label"`
+	Value            string `json:"value"`
+	Code             string `json:"code,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Description      string `json:"description,omitempty"`
+	Icon             string `json:"icon,omitempty"`
+	Sort             int    `json:"sort,omitempty"`
+	PermissionStatus string `json:"permissionStatus,omitempty"`
+	Permission       int    `json:"permission"`
+	Enabled          bool   `json:"enabled"`
 }

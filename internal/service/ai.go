@@ -29,6 +29,8 @@ type (
 	IAlert interface {
 		// GetAlertList 获取告警列表
 		GetAlertList(ctx context.Context, userId int, topic string) ([]model.AlertItem, error)
+		// GetAlertListByTopics 获取多个主题的告警列表
+		GetAlertListByTopics(ctx context.Context, userId int, topics []string) (map[string][]model.AlertItem, error)
 		// DismissAlert 关闭告警
 		DismissAlert(ctx context.Context, userId int, alertId int) error
 		// AddAlert 添加告警

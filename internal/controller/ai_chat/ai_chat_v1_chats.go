@@ -174,6 +174,39 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	return
 }
 
+func (c *ControllerV1) ChatSessionCreate(ctx context.Context, req *v1.ChatSessionCreateReq) (res *v1.ChatSessionCreateRes, err error) {
+	userIdVal := ctx.Value(model.UserGroup{})
+	userId := 0
+	if userIdVal != nil {
+		userId = gconv.Int(userIdVal)
+	}
+	topic := strings.ToLower(strings.TrimSpace(req.Topic))
+	if !isKnownAskNumberTopic(topic) {
+		return nil, gerror.New("unknown topic")
+	}
+	if userId > 0 {
+		user, userErr := service.User().GetUserInfoById(ctx, int64(userId))
+		if userErr != nil || user == nil {
+			return nil, gerror.New("user not found")
+		}
+		ruleLevel := effectiveTopicRuleLevel(ctx, userId, user.RuleLevel)
+		if !checkTopicPermission(ruleLevel, topic) {
+			return nil, gerror.New("no permission for topic")
+		}
+	}
+	sessionId, err := ensureAskNumberSession(ctx, userId, "", topic, 0, topicSessionTitle(topic))
+	if err != nil {
+		return nil, err
+	}
+	return &v1.ChatSessionCreateRes{
+		SessionId:          sessionId,
+		Topic:              topic,
+		Title:              topicSessionTitle(topic),
+		SuggestedQuestions: suggestedQuestionsForTopic(topic),
+		InputPlaceholder:   inputPlaceholderForTopic(topic),
+	}, nil
+}
+
 func (c *ControllerV1) ChatSessionReset(ctx context.Context, req *v1.ChatSessionResetReq) (res *v1.ChatSessionResetRes, err error) {
 	userIdVal := ctx.Value(model.UserGroup{})
 	userId := 0
@@ -425,9 +458,66 @@ func newAskNumberSessionId() string {
 	return fmt.Sprintf("ask_%x", buf)
 }
 
+func isKnownAskNumberTopic(topic string) bool {
+	_, ok := topicPermissionMap[topic]
+	return ok
+}
+
+func topicSessionTitle(topic string) string {
+	switch topic {
+	case "grid":
+		return "网格问数"
+	case "population":
+		return "人流问数"
+	case "traffic":
+		return "车流问数"
+	default:
+		return "问数"
+	}
+}
+
+func suggestedQuestionsForTopic(topic string) []string {
+	switch topic {
+	case "grid":
+		return []string{"这个月哪个社区案件最多？", "本月网格案件结案率是多少？", "分析一下当前最需要关注的重大案件"}
+	case "population":
+		return []string{"今天哪个区域人流最多？", "最近 7 天人流趋势怎么样？", "分析一下今日流动人口变化情况"}
+	case "traffic":
+		return []string{"今天车流总量是多少？", "哪个关口车流最多？", "最近 7 天港澳车趋势怎么样？"}
+	default:
+		return []string{}
+	}
+}
+
+func inputPlaceholderForTopic(topic string) string {
+	switch topic {
+	case "grid":
+		return "可以问我案件总量、结案率、社区排名、类别分布、重大案件..."
+	case "population":
+		return "可以问我人流总量、区域排名、峰值时段、趋势、流动人口..."
+	case "traffic":
+		return "可以问我车流总量、关口排名、港澳车、外地车、停留时长..."
+	default:
+		return "请输入你想查询的问题..."
+	}
+}
+
 func analyzeGridMajorCase(ctx context.Context, metric string, region string) (*v1.GridMajorCaseAnalysisRes, error) {
 	metric = normalizeMajorCaseMetric(metric)
 	query := g.DB("master").Model("case_list").Ctx(ctx)
+	if count, err := g.DB("master").Model("grid_case_record").Ctx(ctx).Count(); err == nil && count > 0 {
+		query = g.DB("master").Model("grid_case_record").Ctx(ctx).Fields(`
+id,
+case_number,
+'' AS case_source,
+report_time,
+case_status AS pending_step,
+COALESCE(NULLIF(case_type2,''), NULLIF(case_type1,'')) AS case_type,
+region,
+community AS responsibility_unit,
+grid_name AS case_location,
+case_title AS description`)
+	}
 	if strings.TrimSpace(region) != "" {
 		query = query.WhereLike("region", "%"+strings.TrimSpace(region)+"%")
 	}
@@ -444,6 +534,7 @@ func analyzeGridMajorCase(ctx context.Context, metric string, region string) (*v
 		scoreMajorCase(&item)
 		cases = append(cases, item)
 	}
+	applyDuplicateCaseScores(cases)
 	sort.SliceStable(cases, func(i, j int) bool {
 		switch metric {
 		case "impact":
@@ -463,13 +554,14 @@ func analyzeGridMajorCase(ctx context.Context, metric string, region string) (*v
 	})
 	top := cases[0]
 	basis := []string{
-		fmt.Sprintf("影响度评分：%d，处置难度评分：%d，综合评分：%d。", top.ImpactScore, top.DifficultyScore, top.TotalScore),
+		fmt.Sprintf("影响度评分：%d，处置难度评分：%d，时效风险评分：%d，综合评分：%d，等级：%s。", top.ImpactScore, top.DifficultyScore, top.TimeRiskScore, top.TotalScore, top.Level),
 	}
 	basis = append(basis, top.Reasons...)
 	return &v1.GridMajorCaseAnalysisRes{
-		Metric: metric,
-		Case:   top,
-		Basis:  basis,
+		Metric:     metric,
+		Case:       top,
+		Basis:      basis,
+		Suggestion: top.Suggestion,
 	}, nil
 }
 
@@ -511,8 +603,9 @@ func buildMajorCaseName(item v1.MajorCaseItem) string {
 }
 
 func scoreMajorCase(item *v1.MajorCaseItem) {
-	impact := 30
-	difficulty := 30
+	impact := 0
+	difficulty := 0
+	timeRisk := 0
 	reasons := make([]string, 0, 8)
 	text := strings.Join([]string{item.CaseSource, item.PendingStep, item.CaseType, item.Region, item.CaseLocation, item.Description}, " ")
 
@@ -524,51 +617,135 @@ func scoreMajorCase(item *v1.MajorCaseItem) {
 		difficulty += score
 		reasons = append(reasons, fmt.Sprintf("难度：%s（+%d）", reason, score))
 	}
+	addTimeRisk := func(score int, reason string) {
+		timeRisk += score
+		reasons = append(reasons, fmt.Sprintf("时效风险：%s（+%d）", reason, score))
+	}
 
-	if containsAny(text, []string{"媒体", "舆情", "督办", "上级", "领导"}) {
-		addImpact(18, "来源或描述包含媒体/督办/上级关注")
-	} else if containsAny(text, []string{"12345", "热线", "信访", "群众投诉", "投诉人", "投诉件"}) {
-		addImpact(12, "来源或描述包含热线投诉、信访等公众反馈")
+	if containsAny(text, []string{"安全", "应急", "消防", "燃气", "漏电", "污染", "群体", "群体投诉", "城市运行"}) {
+		addImpact(30, "案件类别或描述属于安全、应急、群体投诉或城市运行类")
+	}
+	if containsAny(text, []string{"多人", "群体", "反复", "投诉", "隐患", "危险", "停电", "堵塞"}) {
+		addImpact(20, "描述包含多人、群体、反复、投诉、隐患、危险、停电或堵塞等高影响关键词")
 	}
 	if containsAny(text, []string{"地基下沉", "路面塌陷", "塌陷", "沉降", "裂缝", "危房", "坍塌", "结构安全"}) {
-		addImpact(36, "涉及地基、塌陷、裂缝或建筑结构安全等高危隐患")
-	} else if containsAny(text, []string{"安全", "消防", "燃气", "漏电", "污染", "群体"}) {
-		addImpact(18, "涉及公共安全、民生或群体性影响关键词")
-	} else if containsAny(text, []string{"道路", "垃圾", "噪音", "占道", "违建", "市容", "积水"}) {
-		addImpact(10, "涉及高频民生治理问题")
+		addImpact(20, "涉及地基、塌陷、裂缝或建筑结构安全等高危隐患")
+	}
+	if containsAny(text, []string{"媒体", "舆情", "督办", "上级", "领导", "12345", "热线", "信访"}) {
+		addImpact(15, "来源或描述包含媒体、舆情、督办、热线或信访等关注渠道")
 	}
 	if containsAny(text, []string{"小区", "居民", "住宅", "楼栋", "物业", "建筑物", "房屋"}) {
-		addImpact(14, "涉及住宅小区、居民或建筑物，影响人群和安全面更广")
-	}
-	if item.Region != "" {
-		addImpact(4, "案件已定位到具体所属区域，具备网格处置影响面")
+		addImpact(10, "涉及住宅小区、居民或建筑物，影响人群和安全面更广")
 	}
 
-	if containsAny(text, []string{"重复", "反复", "多次", "持续"}) {
-		addDifficulty(18, "存在重复、反复或持续性表述")
+	if isBlankResponsibility(item.ResponsibilityUnit) {
+		addDifficulty(20, "责任单位为空或责任主体不明确")
+	}
+	if strings.Contains(item.ResponsibilityUnit, ",") || strings.Contains(item.ResponsibilityUnit, "、") || strings.Contains(item.ResponsibilityUnit, ";") || strings.Contains(item.ResponsibilityUnit, "；") {
+		addDifficulty(20, "责任单位涉及多个主体，存在跨部门协同难度")
 	}
 	if containsAny(text, []string{"协调", "多部门", "权属", "历史遗留", "疑难", "无法", "困难", "拒不整改"}) {
-		addDifficulty(18, "涉及协调、权属、历史遗留或整改阻力")
+		addDifficulty(20, "涉及协调、权属、历史遗留或整改阻力")
 	}
-	if containsAny(item.PendingStep, []string{"待办", "处置", "派遣", "处理中", "未处理"}) {
+	if !isMajorCaseClosed(*item) && strings.TrimSpace(item.PendingStep) != "" {
 		addDifficulty(10, "当前仍处于待办/处置链路")
-	} else if containsAny(item.PendingStep, []string{"结案", "办结"}) {
-		difficulty -= 6
-		reasons = append(reasons, "难度：案件已办结，处置难度扣减（-6）")
 	}
-	if days := majorCaseAgeDays(item.ReportTime); days >= 30 {
-		addDifficulty(16, fmt.Sprintf("上报已超过%d天", days))
-	} else if days >= 7 {
-		addDifficulty(8, fmt.Sprintf("上报已超过%d天", days))
+	if containsAny(text, []string{"重复", "反复", "多次", "持续"}) {
+		addDifficulty(10, "存在重复、反复或持续性表述")
 	}
-	if len([]rune(item.Description)) >= 60 {
-		addDifficulty(6, "问题描述较长，可能涉及更复杂的现场情况")
+
+	if days := majorCaseAgeDays(item.ReportTime); !isMajorCaseClosed(*item) {
+		if days >= 7 {
+			addTimeRisk(30, fmt.Sprintf("未结且上报已超过%d天", days))
+		} else if days >= 3 {
+			addTimeRisk(20, fmt.Sprintf("未结且上报已超过%d天", days))
+		}
 	}
 
 	item.ImpactScore = clampScore(impact)
 	item.DifficultyScore = clampScore(difficulty)
-	item.TotalScore = clampScore(item.ImpactScore*55/100 + item.DifficultyScore*45/100)
+	item.TimeRiskScore = clampScore(timeRisk)
+	item.TotalScore = clampScore(item.ImpactScore + item.DifficultyScore + item.TimeRiskScore)
+	item.Level = majorCaseLevel(item.TotalScore)
 	item.Reasons = reasons
+	item.Suggestion = majorCaseSuggestions(*item)
+}
+
+func applyDuplicateCaseScores(cases []v1.MajorCaseItem) {
+	counts := make(map[string]int)
+	for _, item := range cases {
+		key := duplicateCaseKey(item)
+		if key != "" {
+			counts[key]++
+		}
+	}
+	for i := range cases {
+		count := counts[duplicateCaseKey(cases[i])]
+		if count >= 5 {
+			addMajorCaseExtraScore(&cases[i], 20, "同区域/同类别近批次重复案件较多")
+		} else if count >= 3 {
+			addMajorCaseExtraScore(&cases[i], 10, "同区域/同类别存在重复案件")
+		}
+	}
+}
+
+func duplicateCaseKey(item v1.MajorCaseItem) string {
+	parts := []string{strings.TrimSpace(item.Region), strings.TrimSpace(item.CaseType)}
+	key := strings.Join(parts, "|")
+	if strings.Trim(key, "| ") == "" {
+		return ""
+	}
+	return key
+}
+
+func addMajorCaseExtraScore(item *v1.MajorCaseItem, score int, reason string) {
+	item.DifficultyScore = clampScore(item.DifficultyScore + score)
+	item.TotalScore = clampScore(item.TotalScore + score)
+	item.Level = majorCaseLevel(item.TotalScore)
+	item.Reasons = append(item.Reasons, fmt.Sprintf("历史重复：%s（+%d）", reason, score))
+	item.Suggestion = majorCaseSuggestions(*item)
+}
+
+func majorCaseLevel(score int) string {
+	switch {
+	case score >= 80:
+		return "重大"
+	case score >= 60:
+		return "重点关注"
+	case score >= 40:
+		return "一般关注"
+	default:
+		return "普通案件"
+	}
+}
+
+func majorCaseSuggestions(item v1.MajorCaseItem) []string {
+	suggestions := make([]string, 0, 3)
+	if item.Level == "重大" || item.TimeRiskScore >= 20 {
+		suggestions = append(suggestions, "建议优先核实现场风险，并纳入重点跟踪清单。")
+	}
+	if isBlankResponsibility(item.ResponsibilityUnit) || item.DifficultyScore >= 20 {
+		suggestions = append(suggestions, "建议明确责任单位和协同部门，形成处置闭环。")
+	}
+	if item.ImpactScore >= 30 {
+		suggestions = append(suggestions, "建议同步关注群众反馈和舆情风险，必要时提前发布处置进展。")
+	}
+	if len(suggestions) == 0 {
+		suggestions = append(suggestions, "建议按常规网格流程持续跟踪处置进度。")
+	}
+	if len(suggestions) > 3 {
+		return suggestions[:3]
+	}
+	return suggestions
+}
+
+func isBlankResponsibility(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == "" || value == "暂无" || value == "未知" || value == "-"
+}
+
+func isMajorCaseClosed(item v1.MajorCaseItem) bool {
+	return containsAny(item.PendingStep, []string{"结案", "办结", "已办结", "已结案", "closed", "done", "finished", "resolved"})
 }
 
 func clampScore(score int) int {
@@ -657,12 +834,22 @@ func formatMajorCaseAnswer(res *v1.GridMajorCaseAnalysisRes) string {
 		fmt.Sprintf("所属区域：%s", emptyText(item.Region, "暂无")),
 		fmt.Sprintf("案件类型：%s", emptyText(item.CaseType, "暂无")),
 		fmt.Sprintf("当前环节：%s", emptyText(item.PendingStep, "暂无")),
-		fmt.Sprintf("综合评分：%d（影响度%d，处置难度%d）", item.TotalScore, item.ImpactScore, item.DifficultyScore),
+		fmt.Sprintf("综合评分：%d（影响度%d，处置难度%d，时效风险%d），等级：%s", item.TotalScore, item.ImpactScore, item.DifficultyScore, item.TimeRiskScore, emptyText(item.Level, "暂无")),
 		"",
 		"判断依据：",
 	}
 	for _, reason := range res.Basis {
 		lines = append(lines, "- "+reason)
+	}
+	suggestions := res.Suggestion
+	if len(suggestions) == 0 {
+		suggestions = item.Suggestion
+	}
+	if len(suggestions) > 0 {
+		lines = append(lines, "", "处置建议：")
+		for _, suggestion := range suggestions {
+			lines = append(lines, "- "+suggestion)
+		}
 	}
 	if item.Description != "" {
 		lines = append(lines, "", "问题描述："+item.Description)
@@ -846,7 +1033,7 @@ func executeFastPath(ctx context.Context, fp *fastPath) (answer string, chartDat
 	case fpPopWeekTrend, fpPopHolidayCompare, fpPopRegionRank, fpPopHourlyTrend:
 		return fastPopQuery(ctx, fp.kind)
 	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist:
-		return fastGridQuery(ctx, fp.kind)
+		return fastGridQueryStable(ctx, fp.kind)
 	}
 	return "暂不支持该问题的快速查询。", "", nil
 }
@@ -996,10 +1183,10 @@ func fastTrafficTopGateToday(ctx context.Context, p ExtractedParams) (string, st
 		dateTo = p.DateTo
 	}
 	result, err := service.Traffic().Aggregate(ctx, model.TrafficAggregateQuery{
-		DateFrom:  dateFrom,
-		DateTo:    dateTo,
-		GroupBy:   "gate",
-		GateName:  p.GateName,
+		DateFrom:    dateFrom,
+		DateTo:      dateTo,
+		GroupBy:     "gate",
+		GateName:    p.GateName,
 		PlateRegion: p.RegionName,
 	})
 	if err != nil {
@@ -1427,15 +1614,16 @@ func fastPopRegionRankQuery(ctx context.Context, db gdb.DB) (string, string, err
 
 func fastGridQuery(ctx context.Context, kind fastPathKind) (string, string, error) {
 	db := g.DB("master")
+	source := gridQuerySource(ctx, db)
 	switch kind {
 	case fpGridCaseCount:
-		count, err := db.Model("case_list").Ctx(ctx).Count()
+		count, err := db.Model(source.Table).Ctx(ctx).Count()
 		if err != nil {
 			return "", "", err
 		}
 		return fmt.Sprintf("当前案件总数为 %d 件。", count), "", nil
 	case fpGridCloseRate:
-		total, _ := db.Model("case_list").Ctx(ctx).Count()
+		total, _ := db.Model(source.Table).Ctx(ctx).Count()
 		closed, _ := db.Model("case_list").Ctx(ctx).Where("pending_step", "结案").Count()
 		rate := 0.0
 		if total > 0 {
@@ -1547,6 +1735,101 @@ func fastGridCaseTypeDistQuery(ctx context.Context, db gdb.DB) (string, string, 
 		records[0]["name"].String(), records[0]["total"].Int(),
 		float64(records[0]["total"].Int())/float64(allTotal)*100)
 	return answer, chart, nil
+}
+
+type gridQuerySourceInfo struct {
+	Table        string
+	RegionExpr   string
+	CaseTypeExpr string
+	ClosedWhere  string
+}
+
+func gridQuerySource(ctx context.Context, db gdb.DB) gridQuerySourceInfo {
+	count, err := db.Model("grid_case_record").Ctx(ctx).Count()
+	if err == nil && count > 0 {
+		return gridQuerySourceInfo{
+			Table:        "grid_case_record",
+			RegionExpr:   "region",
+			CaseTypeExpr: "COALESCE(NULLIF(case_type2,''), NULLIF(case_type1,''))",
+			ClosedWhere:  "(LOWER(COALESCE(case_status, '')) IN ('closed','done','finished','resolved') OR case_status LIKE '%结案%' OR case_status LIKE '%办结%')",
+		}
+	}
+	return gridQuerySourceInfo{
+		Table:        "case_list",
+		RegionExpr:   "region",
+		CaseTypeExpr: "case_type",
+		ClosedWhere:  "pending_step LIKE '%结案%'",
+	}
+}
+
+func fastGridQueryStable(ctx context.Context, kind fastPathKind) (string, string, error) {
+	db := g.DB("master")
+	source := gridQuerySource(ctx, db)
+	switch kind {
+	case fpGridCaseCount:
+		count, err := db.Model(source.Table).Ctx(ctx).Count()
+		if err != nil {
+			return "", "", err
+		}
+		return fmt.Sprintf("当前案件总数为 %d 件。", count), "", nil
+	case fpGridCloseRate:
+		total, _ := db.Model(source.Table).Ctx(ctx).Count()
+		closed, _ := db.Model(source.Table).Ctx(ctx).Where(source.ClosedWhere).Count()
+		rate := 0.0
+		if total > 0 {
+			rate = float64(closed) / float64(total) * 100
+		}
+		return fmt.Sprintf("案件总数 %d 件，已结案 %d 件，结案率 %.1f%%。", total, closed, rate), "", nil
+	case fpGridRegionRank:
+		records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
+SELECT COALESCE(NULLIF(%s,''), '未知') AS name, COUNT(*) AS total
+FROM %s
+GROUP BY name ORDER BY total DESC LIMIT 10`, source.RegionExpr, source.Table)).All()
+		if err != nil || len(records) == 0 {
+			return "暂无区域案件数据。", "", nil
+		}
+		xLabels := make([]string, 0, len(records))
+		totalData := make([]int, 0, len(records))
+		tableRows := make([][]any, 0, len(records))
+		for i, r := range records {
+			xLabels = append(xLabels, r["name"].String())
+			totalData = append(totalData, r["total"].Int())
+			tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), r["name"].String(), r["total"].Int()})
+		}
+		chart := buildChart("bar", "区域案件数量排名 Top10", xLabels,
+			[]chartSeries{{Name: "案件数", Data: totalData}},
+			[]string{"排名", "区域", "案件数"}, tableRows)
+		answer := fmt.Sprintf("案件最多的区域为「%s」，共 %d 件。", records[0]["name"].String(), records[0]["total"].Int())
+		return answer, chart, nil
+	case fpGridCaseTypeDist:
+		records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
+SELECT COALESCE(NULLIF(%s,''), '未分类') AS name, COUNT(*) AS total
+FROM %s
+GROUP BY name ORDER BY total DESC LIMIT 10`, source.CaseTypeExpr, source.Table)).All()
+		if err != nil || len(records) == 0 {
+			return "暂无案件类型分布数据。", "", nil
+		}
+		allTotal := 0
+		for _, r := range records {
+			allTotal += r["total"].Int()
+		}
+		xLabels := make([]string, 0, len(records))
+		totalData := make([]int, 0, len(records))
+		tableRows := make([][]any, 0, len(records))
+		for i, r := range records {
+			t := r["total"].Int()
+			xLabels = append(xLabels, r["name"].String())
+			totalData = append(totalData, t)
+			tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), r["name"].String(), t, fmt.Sprintf("%.1f%%", float64(t)/float64(allTotal)*100)})
+		}
+		chart := buildChart("pie", "案件类型分布 Top10", xLabels,
+			[]chartSeries{{Name: "案件数", Data: totalData}},
+			[]string{"排名", "案件类型", "案件数", "占比"}, tableRows)
+		answer := fmt.Sprintf("案件最多的类型为「%s」，共 %d 件，占比 %.1f%%。",
+			records[0]["name"].String(), records[0]["total"].Int(), float64(records[0]["total"].Int())/float64(allTotal)*100)
+		return answer, chart, nil
+	}
+	return "暂不支持该问题的快速查询。", "", nil
 }
 
 // ---- Helpers ----

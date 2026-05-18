@@ -13,6 +13,11 @@ import (
 
 func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQuery) (*model.TrafficAggregateResult, error) {
 	groupBy := normalizeTrafficGroupBy(query.GroupBy)
+	if result, ok, err := s.aggregateFromMetrics(ctx, query, groupBy); err != nil {
+		return nil, err
+	} else if ok {
+		return result, nil
+	}
 	db := g.DB("master")
 
 	base := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "")
@@ -50,6 +55,97 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 		Series:  series,
 		GroupBy: groupBy,
 	}, nil
+}
+
+func (s *sTraffic) aggregateFromMetrics(ctx context.Context, query model.TrafficAggregateQuery, groupBy string) (*model.TrafficAggregateResult, bool, error) {
+	if strings.TrimSpace(query.Plate) != "" || groupBy == "plateregion" || groupBy == "indir" {
+		return nil, false, nil
+	}
+	table := "traffic_metric_daily"
+	timeColumn := "metric_date"
+	nameExpr := "DATE(metric_date)"
+	orderBy := "name ASC"
+	if groupBy == "hour" {
+		table = "traffic_metric_hourly"
+		timeColumn = "metric_hour"
+		nameExpr = "DATE_FORMAT(metric_hour, '%Y-%m-%d %H:00')"
+	} else if groupBy == "gate" {
+		nameExpr = "COALESCE(NULLIF(device_name, ''), device_id)"
+		orderBy = "total DESC"
+	}
+
+	db := g.DB("master")
+	base := applyTrafficMetricFilters(db.Model(table).Ctx(ctx), timeColumn, query)
+	count, err := base.Count()
+	if err != nil {
+		return nil, false, err
+	}
+	if count == 0 {
+		return nil, false, nil
+	}
+
+	summaryRecord, err := applyTrafficMetricFilters(db.Model(table).Ctx(ctx), timeColumn, query).
+		Fields(`SUM(total) AS total,
+SUM(in_count) AS in_count,
+SUM(out_count) AS out_count,
+SUM(hk_macau_count) AS hk_macau_count,
+SUM(mainland_count) AS mainland_count,
+SUM(total - in_count - out_count) AS unknown_dir_count`).One()
+	if err != nil {
+		return nil, false, err
+	}
+	summary := aggregateSummaryFromRecord(summaryRecord)
+	if summary.MainlandCount == 0 && summary.Total > summary.HkMacauCount {
+		summary.MainlandCount = summary.Total - summary.HkMacauCount
+	}
+
+	records, err := applyTrafficMetricFilters(db.Model(table).Ctx(ctx), timeColumn, query).
+		Fields(fmt.Sprintf("%s AS name, SUM(total) AS total, SUM(in_count) AS in_count, SUM(out_count) AS out_count, SUM(hk_macau_count) AS hk_macau_count", nameExpr)).
+		Group("name").
+		Order(orderBy).
+		Limit(200).
+		All()
+	if err != nil {
+		return nil, false, err
+	}
+	series := make([]model.TrafficAggregateSeriesItem, 0, len(records))
+	for _, record := range records {
+		series = append(series, model.TrafficAggregateSeriesItem{
+			Name:         record["name"].String(),
+			Total:        record["total"].Int(),
+			InCount:      record["in_count"].Int(),
+			OutCount:     record["out_count"].Int(),
+			HkMacauCount: record["hk_macau_count"].Int(),
+		})
+	}
+	return &model.TrafficAggregateResult{Summary: summary, Series: series, GroupBy: groupBy}, true, nil
+}
+
+func applyTrafficMetricFilters(m *gdb.Model, timeColumn string, query model.TrafficAggregateQuery) *gdb.Model {
+	if from := normalizeQueryTime(query.DateFrom, false); from != "" {
+		if timeColumn == "metric_date" {
+			m = m.Where("metric_date >= DATE(?)", from)
+		} else {
+			m = m.Where(timeColumn+" >= ?", from)
+		}
+	}
+	if to := normalizeQueryTime(query.DateTo, true); to != "" {
+		if timeColumn == "metric_date" {
+			m = m.Where("metric_date <= DATE(?)", to)
+		} else {
+			m = m.Where(timeColumn+" <= ?", to)
+		}
+	}
+	if strings.TrimSpace(query.DeviceId) != "" {
+		m = m.Where("device_id = ?", strings.TrimSpace(query.DeviceId))
+	}
+	if gateName := strings.TrimSpace(query.GateName); gateName != "" {
+		m = m.Where("device_name LIKE ?", "%"+gateName+"%")
+	}
+	if region := strings.TrimSpace(query.PlateRegion); region != "" {
+		m = m.Where("(region LIKE ? OR device_name LIKE ?)", "%"+region+"%", "%"+region+"%")
+	}
+	return m
 }
 
 // applyTrafficExtraFilters 应用卡口名称和区域名称过滤

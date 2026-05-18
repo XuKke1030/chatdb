@@ -39,6 +39,7 @@ type SyncResult struct {
 }
 
 type Client interface {
+	TestConnection(ctx context.Context) error
 	SyncKnowledgeBases(ctx context.Context, scope SyncScope) (SyncResult, error)
 	SyncDocuments(ctx context.Context, scope SyncScope) (SyncResult, error)
 	SyncPermissions(ctx context.Context, scope SyncScope) (SyncResult, error)
@@ -48,18 +49,32 @@ type Client interface {
 }
 
 type Config struct {
-	Provider  string
-	BaseUrl   string
-	AppKey    string
-	AppSecret string
+	Provider                 string
+	BaseUrl                  string
+	AppKey                   string
+	AppSecret                string
+	TokenPath                string
+	TrafficQueryPath         string
+	PopulationQueryPath      string
+	GridQueryPath            string
+	KnowledgeBasesPath       string
+	DocumentsPath            string
+	DocumentSegmentsPath     string
+	KnowledgePermissionsPath string
+	TimeoutSeconds           int
+	RetryTimes               int
+	TokenExpireSkewSeconds   int
 }
 
 func NewClient(cfg Config) Client {
-	// Until the real AIDGP contract is available, the concrete AIDGP client
-	// intentionally falls back to deterministic mock data. The controller and
-	// task/log persistence are already real, so swapping this implementation
-	// later will not change the upper layers.
-	return &MockClient{Provider: normalizeProvider(cfg.Provider)}
+	provider := normalizeProvider(cfg.Provider)
+	if provider != ProviderAidgp {
+		return &MockClient{Provider: provider}
+	}
+	if strings.TrimSpace(cfg.BaseUrl) == "" || strings.TrimSpace(cfg.AppKey) == "" || strings.TrimSpace(cfg.AppSecret) == "" {
+		return &MockClient{Provider: provider}
+	}
+	return NewHTTPClient(cfg)
 }
 
 func normalizeProvider(provider string) string {
@@ -72,6 +87,10 @@ func normalizeProvider(provider string) string {
 
 type MockClient struct {
 	Provider string
+}
+
+func (c *MockClient) TestConnection(ctx context.Context) error {
+	return nil
 }
 
 func (c *MockClient) SyncKnowledgeBases(ctx context.Context, scope SyncScope) (SyncResult, error) {

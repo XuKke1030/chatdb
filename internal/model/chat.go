@@ -16,6 +16,8 @@ type ChatInput struct {
 	Topic         string            `json:"topic" dc:"主题：grid|population|traffic"`
 	KnowledgeCode string            `json:"knowledgeCode" dc:"问答知识库编码"`
 	SessionId     string            `json:"sessionId" dc:"问数会话ID，不传时自动创建"`
+	Source        string            `json:"source" dc:"来源：topic_entry|alert_click"`
+	AlertId       int               `json:"alertId" dc:"告警ID，点击告警自动提问时传入"`
 	History       []ChatHistoryItem `json:"history" dc:"前端补充的历史消息"`
 }
 

@@ -7,6 +7,7 @@ import (
 	"ai-chat-sql/internal/controller/qa"
 	"ai-chat-sql/internal/controller/traffic"
 	"ai-chat-sql/internal/controller/user"
+	"ai-chat-sql/internal/logic/uiap"
 	"ai-chat-sql/internal/packed"
 	"ai-chat-sql/internal/service"
 	"context"
@@ -29,6 +30,7 @@ var (
 				return err
 			}
 			service.Traffic().StartMqttSubscriber(ctx)
+			uiap.StartPermissionPoller(ctx)
 			s := g.Server()
 			s.Group("/api/v1", func(group *ghttp.RouterGroup) {
 				group.Middleware(service.Middleware().RequestMetrics, service.Middleware().HandlerResponse, ghttp.MiddlewareCORS)

@@ -454,6 +454,90 @@ func (c *ControllerV1) AdminSyncLogs(ctx context.Context, req *v1.AdminSyncLogsR
 	return &v1.AdminSyncLogsRes{TaskId: req.TaskId, List: scanAdminSyncLogs(records)}, nil
 }
 
+func (c *ControllerV1) AdminSyncRetry(ctx context.Context, req *v1.AdminSyncRetryReq) (res *v1.AdminSyncRetryRes, err error) {
+	record, err := g.DB("master").Model("qa_sync_task").Ctx(ctx).
+		Fields("sync_type").
+		Where("id = ?", req.TaskId).
+		One()
+	if err != nil {
+		return nil, err
+	}
+	if record == nil {
+		return nil, fmt.Errorf("sync task not found: %d", req.TaskId)
+	}
+	result, err := executeAdminAidgpSync(ctx, record["sync_type"].String(), "")
+	if err != nil {
+		return nil, err
+	}
+	out := v1.AdminSyncRetryRes(*result)
+	return &out, nil
+}
+
+func (c *ControllerV1) AdminAidgpConnectionTest(ctx context.Context, req *v1.AdminAidgpConnectionTestReq) (res *v1.AdminAidgpConnectionTestRes, err error) {
+	provider := adminSyncProvider()
+	start := time.Now()
+	client := adminAidgpClient(provider)
+	testErr := client.TestConnection(ctx)
+	res = &v1.AdminAidgpConnectionTestRes{
+		Provider: provider,
+		Success:  testErr == nil,
+		CostMs:   time.Since(start).Milliseconds(),
+	}
+	if testErr != nil {
+		res.Message = testErr.Error()
+		return res, nil
+	}
+	res.Message = "AIDGP connection test passed"
+	return res, nil
+}
+
+func (c *ControllerV1) AdminSyncFreshness(ctx context.Context, req *v1.AdminSyncFreshnessReq) (res *v1.AdminSyncFreshnessRes, err error) {
+	types := []string{aidgp.SyncKnowledgeBases, aidgp.SyncDocuments, aidgp.SyncPermissions, aidgp.SyncGridData, aidgp.SyncTrafficData, aidgp.SyncPopulationData}
+	list := make([]v1.AdminSyncFreshnessItem, 0, len(types))
+	for _, syncType := range types {
+		task, _ := g.DB("master").Model("qa_sync_task").Ctx(ctx).
+			Fields("finished_at, status").
+			Where("sync_type = ?", syncType).
+			OrderDesc("id").
+			One()
+		raw, _ := g.DB("master").Model("aidgp_sync_record").Ctx(ctx).
+			Fields("MAX(last_sync_time) AS latest_record_at, COUNT(*) AS record_count").
+			Where("sync_type = ?", syncType).
+			One()
+		status := "none"
+		latestTaskAt := 0
+		if task != nil {
+			status = task["status"].String()
+			latestTaskAt = task["finished_at"].Int()
+		}
+		latestRecordAt := 0
+		recordCount := 0
+		if raw != nil {
+			latestRecordAt = raw["latest_record_at"].Int()
+			recordCount = raw["record_count"].Int()
+		}
+		list = append(list, v1.AdminSyncFreshnessItem{
+			SyncType:       syncType,
+			LatestTaskAt:   latestTaskAt,
+			LatestRecordAt: latestRecordAt,
+			RecordCount:    recordCount,
+			Status:         status,
+		})
+	}
+	return &v1.AdminSyncFreshnessRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminSyncReconcile(ctx context.Context, req *v1.AdminSyncReconcileReq) (res *v1.AdminSyncReconcileRes, err error) {
+	items := []v1.AdminSyncReconcileItem{
+		reconcileSyncType(ctx, aidgp.SyncKnowledgeBases, "qa_knowledge_base", "source_provider = 'aidgp'"),
+		reconcileSyncType(ctx, aidgp.SyncDocuments, "qa_document", "source_provider = 'aidgp'"),
+		reconcileSyncType(ctx, aidgp.SyncGridData, "grid_case_record", "source_provider = 'aidgp'"),
+		reconcileSyncType(ctx, aidgp.SyncTrafficData, "traffic_gate_record", "1 = 1"),
+		reconcileSyncType(ctx, aidgp.SyncPopulationData, "population_flow_record", "source_provider = 'aidgp'"),
+	}
+	return &v1.AdminSyncReconcileRes{List: items}, nil
+}
+
 func (c *ControllerV1) AdminLogs(ctx context.Context, req *v1.AdminLogsReq) (res *v1.AdminLogsRes, err error) {
 	query := g.DB("master").Model("admin_operation_log").Ctx(ctx)
 	if req.LogType == "system" || req.LogType == "admin" {
@@ -1124,6 +1208,17 @@ func adminAidgpClient(provider string) aidgp.Client {
 		cfg.BaseUrl = aidgpCfg.BaseUrl
 		cfg.AppKey = aidgpCfg.AppKey
 		cfg.AppSecret = aidgpCfg.AppSecret
+		cfg.TokenPath = aidgpCfg.TokenPath
+		cfg.TrafficQueryPath = aidgpCfg.TrafficQueryPath
+		cfg.PopulationQueryPath = aidgpCfg.PopulationQueryPath
+		cfg.GridQueryPath = aidgpCfg.GridQueryPath
+		cfg.KnowledgeBasesPath = aidgpCfg.KnowledgeBasesPath
+		cfg.DocumentsPath = aidgpCfg.DocumentsPath
+		cfg.DocumentSegmentsPath = aidgpCfg.DocumentSegmentsPath
+		cfg.KnowledgePermissionsPath = aidgpCfg.KnowledgePermissionsPath
+		cfg.TimeoutSeconds = aidgpCfg.TimeoutSeconds
+		cfg.RetryTimes = aidgpCfg.RetryTimes
+		cfg.TokenExpireSkewSeconds = aidgpCfg.TokenExpireSkewSeconds
 	}
 	return aidgp.NewClient(cfg)
 }
@@ -1244,6 +1339,41 @@ func scanAdminSyncLogs(records gdb.Result) []v1.AdminSyncLogItem {
 		})
 	}
 	return list
+}
+
+func reconcileSyncType(ctx context.Context, syncType string, localTable string, localWhere string) v1.AdminSyncReconcileItem {
+	rawRecord, _ := g.DB("master").Model("aidgp_sync_record").Ctx(ctx).
+		Fields("COUNT(*) AS raw_count, MAX(last_sync_time) AS latest_raw_at").
+		Where("sync_type = ?", syncType).
+		One()
+	rawCount := 0
+	latestRawAt := 0
+	if rawRecord != nil {
+		rawCount = rawRecord["raw_count"].Int()
+		latestRawAt = rawRecord["latest_raw_at"].Int()
+	}
+	localModel := g.DB("master").Model(localTable).Ctx(ctx)
+	if strings.TrimSpace(localWhere) != "" {
+		localModel = localModel.Where(localWhere)
+	}
+	localCount, err := localModel.Count()
+	status := "ok"
+	if err != nil {
+		status = "local_error"
+		localCount = 0
+	} else if rawCount == 0 && localCount == 0 {
+		status = "empty"
+	} else if rawCount != localCount {
+		status = "diff"
+	}
+	return v1.AdminSyncReconcileItem{
+		SyncType:    syncType,
+		RawCount:    rawCount,
+		LocalCount:  localCount,
+		Difference:  localCount - rawCount,
+		LatestRawAt: latestRawAt,
+		Status:      status,
+	}
 }
 
 type gridParseError struct {

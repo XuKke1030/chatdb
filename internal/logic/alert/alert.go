@@ -6,6 +6,7 @@ import (
 	"ai-chat-sql/internal/service"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
@@ -44,17 +45,55 @@ func checkTopicPermission(ruleLevel int, topic string) bool {
 
 // GetAlertList 获取告警列表
 func (s *sAlert) GetAlertList(ctx context.Context, userId int, topic string) ([]model.AlertItem, error) {
+	topics := normalizeTopics(topic)
+	if len(topics) == 0 {
+		topics = []string{"grid", "population", "traffic"}
+	}
+	grouped, err := s.GetAlertListByTopics(ctx, userId, topics)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]model.AlertItem, 0)
+	for _, itemTopic := range []string{"grid", "population", "traffic"} {
+		result = append(result, grouped[itemTopic]...)
+	}
+	return result, nil
+}
 
+func (s *sAlert) GetAlertListByTopics(ctx context.Context, userId int, topics []string) (map[string][]model.AlertItem, error) {
 	// 获取用户权限等级
 	ruleLevel, err := getUserRuleLevel(ctx, userId)
 	if err != nil {
 		return nil, err
 	}
 
-	query := g.DB("master").Model("alert_event").Ctx(ctx).Where("status", "active")
-	if topic != "" {
-		query = query.Where("topic", topic)
+	allowedTopics := filterAllowedTopics(ruleLevel, topics)
+	result := make(map[string][]model.AlertItem, len(allowedTopics))
+	for _, itemTopic := range allowedTopics {
+		result[itemTopic] = []model.AlertItem{}
 	}
+	if len(allowedTopics) == 0 {
+		return result, nil
+	}
+
+	dismissed, err := s.getDismissedAlertMap(ctx, userId)
+	if err != nil {
+		return nil, err
+	}
+	dynamicAlerts := s.generateThresholdAlerts(ctx, allowedTopics)
+	for _, alert := range dynamicAlerts {
+		if _, ok := result[alert.Topic]; !ok {
+			continue
+		}
+		if dismissed[alert.Id] {
+			continue
+		}
+		alert.DisplayTimeText = formatAlertDisplayTime(alert.CreateTime)
+		result[alert.Topic] = append(result[alert.Topic], alert)
+	}
+
+	query := g.DB("master").Model("alert_event").Ctx(ctx).Where("status", "active")
+	query = query.WhereIn("topic", allowedTopics)
 	records, err := query.OrderDesc("create_time").All()
 	if err != nil {
 		return nil, err
@@ -65,12 +104,6 @@ func (s *sAlert) GetAlertList(ctx context.Context, userId int, topic string) ([]
 		return nil, err
 	}
 
-	dismissed, err := s.getDismissedAlertMap(ctx, userId)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []model.AlertItem
 	for _, item := range dbAlerts {
 		if item == nil {
 			continue
@@ -83,7 +116,7 @@ func (s *sAlert) GetAlertList(ctx context.Context, userId int, topic string) ([]
 		}
 		alert := item.toModel()
 		alert.DisplayTimeText = formatAlertDisplayTime(alert.CreateTime)
-		result = append(result, alert)
+		result[alert.Topic] = append(result[alert.Topic], alert)
 	}
 	return result, nil
 }
@@ -238,16 +271,220 @@ func formatAlertDisplayTime(createTime int) string {
 
 func getUserRuleLevel(ctx context.Context, userId int) (int, error) {
 	if userId <= 0 {
-		return 7, nil
+		return 0, nil
 	}
 	user, err := service.User().GetUserInfoById(ctx, int64(userId))
 	if err != nil {
-		return 7, nil
+		return 0, nil
 	}
 	if user == nil {
-		return 7, nil
+		return 0, nil
 	}
-	return user.RuleLevel, nil
+	ruleLevel := user.RuleLevel
+	record, err := g.DB("master").Model("admin_user_profile").Ctx(ctx).
+		Fields("enabled, rule_level").
+		Where("user_id = ?", userId).
+		One()
+	if err == nil && record != nil {
+		if record["enabled"].Val() != nil && record["enabled"].Int() == 0 {
+			return 0, nil
+		}
+		if record["rule_level"].Val() != nil {
+			ruleLevel = record["rule_level"].Int()
+		}
+	}
+	return ruleLevel, nil
+}
+
+func normalizeTopics(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return []string{}
+	}
+	return filterKnownTopics(strings.Split(raw, ","))
+}
+
+func filterKnownTopics(topics []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(topics))
+	for _, item := range topics {
+		topic := strings.ToLower(strings.TrimSpace(item))
+		if _, ok := topicPermissionMap[topic]; !ok || seen[topic] {
+			continue
+		}
+		seen[topic] = true
+		out = append(out, topic)
+	}
+	return out
+}
+
+func filterAllowedTopics(ruleLevel int, topics []string) []string {
+	topics = filterKnownTopics(topics)
+	if len(topics) == 0 {
+		topics = []string{"grid", "population", "traffic"}
+	}
+	out := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		if checkTopicPermission(ruleLevel, topic) {
+			out = append(out, topic)
+		}
+	}
+	return out
+}
+
+func (s *sAlert) generateThresholdAlerts(ctx context.Context, topics []string) []model.AlertItem {
+	alerts := make([]model.AlertItem, 0)
+	now := int(gtime.Timestamp())
+	for _, topic := range topics {
+		switch topic {
+		case "traffic":
+			alerts = append(alerts, trafficThresholdAlerts(ctx, now)...)
+		case "population":
+			alerts = append(alerts, populationThresholdAlerts(ctx, now)...)
+		case "grid":
+			alerts = append(alerts, gridThresholdAlerts(ctx, now)...)
+		}
+	}
+	return alerts
+}
+
+func trafficThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
+	today, okToday := dailyTrafficMetric(ctx, "CURDATE()")
+	yesterday, okYesterday := dailyTrafficMetric(ctx, "DATE_SUB(CURDATE(), INTERVAL 1 DAY)")
+	if !okToday || !okYesterday {
+		return nil
+	}
+	alerts := make([]model.AlertItem, 0, 3)
+	if rate := growthRate(today["total"], yesterday["total"]); rate >= 20 {
+		alerts = append(alerts, thresholdAlert(-1001, "traffic", "车流异常增长", fmt.Sprintf("今日车流较昨日增长 %.1f%%", rate), "分析一下今日车流异常增长情况", "warning", now))
+	}
+	if rate := growthRate(today["hk_macau_count"], yesterday["hk_macau_count"]); rate >= 20 {
+		alerts = append(alerts, thresholdAlert(-1002, "traffic", "港澳车异常增长", fmt.Sprintf("今日港澳车较昨日增长 %.1f%%", rate), "分析一下今日港澳车流异常增长原因", "warning", now))
+	}
+	if rate := growthRate(today["foreign_count"], yesterday["foreign_count"]); rate >= 20 {
+		alerts = append(alerts, thresholdAlert(-1003, "traffic", "外地车异常增长", fmt.Sprintf("今日外地车较昨日增长 %.1f%%", rate), "分析一下今日外地车来源和停留情况", "warning", now))
+	}
+	return alerts
+}
+
+func populationThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
+	today, okToday := dailyPopulationMetric(ctx, "CURDATE()")
+	yesterday, okYesterday := dailyPopulationMetric(ctx, "DATE_SUB(CURDATE(), INTERVAL 1 DAY)")
+	if !okToday || !okYesterday {
+		return nil
+	}
+	alerts := make([]model.AlertItem, 0, 2)
+	if rate := growthRate(today["in_count"]+today["out_count"], yesterday["in_count"]+yesterday["out_count"]); rate >= 30 {
+		alerts = append(alerts, thresholdAlert(-2001, "population", "区域人流异常增长", fmt.Sprintf("今日人流较昨日增长 %.1f%%", rate), "分析一下该区域人流异常增长情况", "warning", now))
+	}
+	if rate := growthRate(today["floating_population_count"], yesterday["floating_population_count"]); rate >= 20 {
+		alerts = append(alerts, thresholdAlert(-2002, "population", "流动人口异常增长", fmt.Sprintf("今日流动人口较昨日增长 %.1f%%", rate), "分析一下今日流动人口变化情况", "warning", now))
+	}
+	return alerts
+}
+
+func gridThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
+	alerts := make([]model.AlertItem, 0, 2)
+	latestMonth, latestTotal, ok := latestGridMonthlyCount(ctx)
+	if ok {
+		if avg, avgOK := previousGridMonthlyAvg(ctx, latestMonth); avgOK {
+			if rate := growthRate(latestTotal, avg); rate >= 30 {
+				alerts = append(alerts, thresholdAlert(-3001, "grid", "案件量异常增长", fmt.Sprintf("%s 网格案件数较近 3 个周期均值增长 %.1f%%", latestMonth, rate), "分析一下近期网格案件增长情况", "warning", now))
+			}
+		}
+	}
+	record, err := g.DB("master").Model("grid_case_record").Ctx(ctx).
+		Fields("COUNT(1) AS count").
+		Where("major_score > 0").
+		WhereNotIn("case_status", []string{"已办结", "已结案", "closed", "done"}).
+		One()
+	if err == nil && record != nil && record["count"].Int() > 0 {
+		alerts = append(alerts, thresholdAlert(-3002, "grid", "重大案件提醒", "存在未办结重大案件需要关注", "分析一下当前最需要关注的重大案件", "warning", now))
+	}
+	return alerts
+}
+
+func dailyTrafficMetric(ctx context.Context, dateExpr string) (map[string]float64, bool) {
+	record, err := g.DB("master").Model("traffic_metric_daily").Ctx(ctx).
+		Fields("COALESCE(SUM(total),0) AS total, COALESCE(SUM(hk_macau_count),0) AS hk_macau_count, COALESCE(SUM(foreign_count),0) AS foreign_count").
+		Where(fmt.Sprintf("metric_date = %s", dateExpr)).
+		One()
+	if err != nil || record == nil {
+		return nil, false
+	}
+	return map[string]float64{
+		"total":          record["total"].Float64(),
+		"hk_macau_count": record["hk_macau_count"].Float64(),
+		"foreign_count":  record["foreign_count"].Float64(),
+	}, true
+}
+
+func dailyPopulationMetric(ctx context.Context, dateExpr string) (map[string]float64, bool) {
+	record, err := g.DB("master").Model("population_metric_daily").Ctx(ctx).
+		Fields("COALESCE(SUM(in_count),0) AS in_count, COALESCE(SUM(out_count),0) AS out_count, COALESCE(SUM(floating_population_count),0) AS floating_population_count").
+		Where(fmt.Sprintf("metric_date = %s", dateExpr)).
+		One()
+	if err != nil || record == nil {
+		return nil, false
+	}
+	return map[string]float64{
+		"in_count":                  record["in_count"].Float64(),
+		"out_count":                 record["out_count"].Float64(),
+		"floating_population_count": record["floating_population_count"].Float64(),
+	}, true
+}
+
+func latestGridMonthlyCount(ctx context.Context) (string, float64, bool) {
+	record, err := g.DB("master").Model("grid_metric_monthly").Ctx(ctx).
+		Fields("metric_month, COALESCE(SUM(case_count),0) AS case_count").
+		Group("metric_month").
+		OrderDesc("metric_month").
+		Limit(1).
+		One()
+	if err != nil || record == nil {
+		return "", 0, false
+	}
+	month := record["metric_month"].String()
+	if month == "" {
+		return "", 0, false
+	}
+	return month, record["case_count"].Float64(), true
+}
+
+func previousGridMonthlyAvg(ctx context.Context, latestMonth string) (float64, bool) {
+	records, err := g.DB("master").Model("grid_metric_monthly").Ctx(ctx).
+		Fields("metric_month, COALESCE(SUM(case_count),0) AS case_count").
+		Where("metric_month < ?", latestMonth).
+		Group("metric_month").
+		OrderDesc("metric_month").
+		Limit(3).
+		All()
+	if err != nil || len(records) == 0 {
+		return 0, false
+	}
+	var total float64
+	for _, record := range records {
+		total += record["case_count"].Float64()
+	}
+	return total / float64(len(records)), true
+}
+
+func growthRate(current, base float64) float64 {
+	if current <= 0 || base <= 0 {
+		return 0
+	}
+	return (current - base) / base * 100
+}
+
+func thresholdAlert(id int, topic string, title string, content string, question string, level string, now int) model.AlertItem {
+	return model.AlertItem{
+		Id:         id,
+		Topic:      topic,
+		Title:      title,
+		Content:    content,
+		Question:   question,
+		Level:      level,
+		CreateTime: now,
+	}
 }
 
 func seedAlerts() []model.AlertItem {

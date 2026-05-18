@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "ai-chat-sql/api/user/v1"
+	"ai-chat-sql/internal/logic/uiap"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 
@@ -43,6 +44,64 @@ func (c *ControllerV1) UserLogin(ctx context.Context, req *v1.UserLoginReq) (res
 		"create_time": now,
 	}).Insert()
 	return
+}
+
+func (c *ControllerV1) UiapCallback(ctx context.Context, req *v1.UiapCallbackReq) (res *v1.UiapCallbackRes, err error) {
+	cfg, ok := uiap.EnabledConfigFromSystem()
+	if !ok {
+		return nil, fmt.Errorf("uiap is not enabled or config is incomplete")
+	}
+	client := uiap.NewClient(cfg)
+	token, err := client.ExchangeCode(ctx, req.Code, req.RedirectUri)
+	if err != nil {
+		return nil, err
+	}
+	info, err := client.UserInfo(ctx, token.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	permission, err := client.Permissions(ctx, token.AccessToken, uiap.PermissionQuery{
+		UserId:                      info.UserId,
+		Username:                    info.Username,
+		IncludeTopicPermissions:     true,
+		IncludeKnowledgePermissions: true,
+		IncludeDocumentPermissions:  true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	userId, err := uiap.ApplyUserPermissions(ctx, info, permission)
+	if err != nil {
+		return nil, err
+	}
+	out, err := service.User().GenJwtTokenByUserId(ctx, userId)
+	if err != nil {
+		return nil, err
+	}
+	user, err := service.User().GetUserInfoById(ctx, userId)
+	if err != nil {
+		return nil, err
+	}
+	res = &v1.UiapCallbackRes{}
+	res.JWTGenTokenOutput = *out
+	if err = gconv.Scan(user, &res.User); err != nil {
+		return nil, err
+	}
+	res.RuleLevel = effectiveRuleLevel(ctx, userId, user.RuleLevel)
+	now := int(gtime.Timestamp())
+	_, _ = g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", userId).Data(g.Map{
+		"last_login_tme": now,
+		"update_time":    now,
+	}).Update()
+	_, _ = g.DB("master").Model("admin_operation_log").Ctx(ctx).Data(g.Map{
+		"log_type":    "system",
+		"username":    user.Username,
+		"action_type": "UIAP登录",
+		"content":     "UIAP统一身份认证登录问数平台",
+		"result":      "success",
+		"create_time": now,
+	}).Insert()
+	return res, nil
 }
 
 func (c *ControllerV1) UserRegister(ctx context.Context, req *v1.UserRegisterReq) (res *v1.UserRegisterRes, err error) {
@@ -310,14 +369,19 @@ func usernameById(ctx context.Context, userId int64) string {
 
 func topicItemsFromRuleLevel(ruleLevel int, enabledOnly bool) []model.TopicItem {
 	allTopics := []model.TopicItem{
-		{Label: "网格", Value: "grid", Permission: 1},
-		{Label: "人流", Value: "population", Permission: 2},
-		{Label: "车流", Value: "traffic", Permission: 4},
+		{Label: "网格", Value: "grid", Code: "grid", Name: "网格", Description: "案件总量、结案率、社区排名、重大案件分析", Icon: "grid", Sort: 1, Permission: 1},
+		{Label: "人流", Value: "population", Code: "population", Name: "人流", Description: "区域人流、峰值时段、趋势分析、流动人口", Icon: "users", Sort: 2, Permission: 2},
+		{Label: "车流", Value: "traffic", Code: "traffic", Name: "车流", Description: "关口车流、港澳车、外地车、停留时长", Icon: "car", Sort: 3, Permission: 4},
 	}
 
 	list := make([]model.TopicItem, 0, len(allTopics))
 	for _, topic := range allTopics {
 		topic.Enabled = ruleLevel&topic.Permission != 0
+		if topic.Enabled {
+			topic.PermissionStatus = "allowed"
+		} else {
+			topic.PermissionStatus = "denied"
+		}
 		if enabledOnly && !topic.Enabled {
 			continue
 		}

@@ -12,6 +12,7 @@ import (
 
 type IAiChatV1 interface {
 	Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatRes, err error)
+	ChatSessionCreate(ctx context.Context, req *v1.ChatSessionCreateReq) (res *v1.ChatSessionCreateRes, err error)
 	ChatSessionReset(ctx context.Context, req *v1.ChatSessionResetReq) (res *v1.ChatSessionResetRes, err error)
 	GridMajorCaseAnalysis(ctx context.Context, req *v1.GridMajorCaseAnalysisReq) (res *v1.GridMajorCaseAnalysisRes, err error)
 	SpeechTranscribe(ctx context.Context, req *v1.SpeechTranscribeReq) (res *v1.SpeechTranscribeRes, err error)

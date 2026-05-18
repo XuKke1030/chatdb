@@ -81,6 +81,9 @@ func applyEnvOverrides() {
 	if Config.QaConfig.Sync.Aidgp == nil {
 		Config.QaConfig.Sync.Aidgp = &model.QaAidgpConfig{}
 	}
+	if Config.Uiap == nil {
+		Config.Uiap = &model.UiapConfig{}
+	}
 	if Config.DbConfig == nil {
 		Config.DbConfig = &model.DbConfig{}
 	}
@@ -114,6 +117,21 @@ func applyEnvOverrides() {
 	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.BaseUrl, "CHATDB_QA_AIDGP_BASE_URL")
 	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.AppKey, "CHATDB_QA_AIDGP_APP_KEY")
 	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.AppSecret, "CHATDB_QA_AIDGP_APP_SECRET")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.TokenPath, "CHATDB_AIDGP_TOKEN_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.TrafficQueryPath, "CHATDB_AIDGP_TRAFFIC_QUERY_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.PopulationQueryPath, "CHATDB_AIDGP_POPULATION_QUERY_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.GridQueryPath, "CHATDB_AIDGP_GRID_QUERY_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.KnowledgeBasesPath, "CHATDB_AIDGP_KNOWLEDGE_BASES_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.DocumentsPath, "CHATDB_AIDGP_DOCUMENTS_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.DocumentSegmentsPath, "CHATDB_AIDGP_DOCUMENT_SEGMENTS_PATH")
+	setStringFromEnv(&Config.QaConfig.Sync.Aidgp.KnowledgePermissionsPath, "CHATDB_AIDGP_KNOWLEDGE_PERMISSIONS_PATH")
+	setStringFromEnv(&Config.Uiap.BaseUrl, "CHATDB_UIAP_BASE_URL")
+	setStringFromEnv(&Config.Uiap.ClientId, "CHATDB_UIAP_CLIENT_ID")
+	setStringFromEnv(&Config.Uiap.ClientSecret, "CHATDB_UIAP_CLIENT_SECRET")
+	setStringFromEnv(&Config.Uiap.TokenPath, "CHATDB_UIAP_TOKEN_PATH")
+	setStringFromEnv(&Config.Uiap.UserInfoPath, "CHATDB_UIAP_USER_INFO_PATH")
+	setStringFromEnv(&Config.Uiap.PermissionPath, "CHATDB_UIAP_PERMISSION_PATH")
+	setStringFromEnv(&Config.Uiap.BatchPermissionPath, "CHATDB_UIAP_BATCH_PERMISSION_PATH")
 	setStringFromEnv(&Config.Traffic.Mqtt.Broker, "CHATDB_TRAFFIC_MQTT_BROKER")
 	setStringFromEnv(&Config.Traffic.Mqtt.Topic, "CHATDB_TRAFFIC_MQTT_TOPIC")
 	setStringFromEnv(&Config.Traffic.Mqtt.ClientIdPrefix, "CHATDB_TRAFFIC_MQTT_CLIENT_ID_PREFIX")
@@ -131,6 +149,46 @@ func applyEnvOverrides() {
 	if readonly := os.Getenv("CHATDB_DB_READONLY"); readonly != "" {
 		if v, err := strconv.ParseBool(readonly); err == nil {
 			Config.DbConfig.Readonly = v
+		}
+	}
+	if enabled := os.Getenv("CHATDB_UIAP_ENABLED"); enabled != "" {
+		if v, err := strconv.ParseBool(enabled); err == nil {
+			Config.Uiap.Enabled = v
+		}
+	}
+	if seconds := os.Getenv("CHATDB_UIAP_TIMEOUT_SECONDS"); seconds != "" {
+		if v, err := strconv.Atoi(seconds); err == nil {
+			Config.Uiap.TimeoutSeconds = v
+		}
+	}
+	if seconds := os.Getenv("CHATDB_UIAP_TOKEN_EXPIRE_SKEW_SECONDS"); seconds != "" {
+		if v, err := strconv.Atoi(seconds); err == nil {
+			Config.Uiap.TokenExpireSkewSeconds = v
+		}
+	}
+	if seconds := os.Getenv("CHATDB_UIAP_PERMISSION_POLL_INTERVAL_SECONDS"); seconds != "" {
+		if v, err := strconv.Atoi(seconds); err == nil {
+			Config.Uiap.PermissionPollIntervalSeconds = v
+		}
+	}
+	if size := os.Getenv("CHATDB_UIAP_PERMISSION_POLL_PAGE_SIZE"); size != "" {
+		if v, err := strconv.Atoi(size); err == nil {
+			Config.Uiap.PermissionPollPageSize = v
+		}
+	}
+	if seconds := os.Getenv("CHATDB_AIDGP_TIMEOUT_SECONDS"); seconds != "" {
+		if v, err := strconv.Atoi(seconds); err == nil {
+			Config.QaConfig.Sync.Aidgp.TimeoutSeconds = v
+		}
+	}
+	if retries := os.Getenv("CHATDB_AIDGP_RETRY_TIMES"); retries != "" {
+		if v, err := strconv.Atoi(retries); err == nil {
+			Config.QaConfig.Sync.Aidgp.RetryTimes = v
+		}
+	}
+	if seconds := os.Getenv("CHATDB_AIDGP_TOKEN_EXPIRE_SKEW_SECONDS"); seconds != "" {
+		if v, err := strconv.Atoi(seconds); err == nil {
+			Config.QaConfig.Sync.Aidgp.TokenExpireSkewSeconds = v
 		}
 	}
 	if enabled := os.Getenv("CHATDB_TRAFFIC_MQTT_ENABLED"); enabled != "" {

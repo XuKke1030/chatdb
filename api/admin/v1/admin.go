@@ -338,6 +338,57 @@ type AdminSyncLogsRes struct {
 	List   []AdminSyncLogItem `json:"list"`
 }
 
+type AdminSyncRetryReq struct {
+	g.Meta `path:"/admin/sync/tasks/{taskId}/retry" method:"post" tags:"V1/Admin" sm:"retry sync task"`
+	TaskId int64 `json:"taskId" p:"taskId"`
+}
+
+type AdminSyncRetryRes AdminSyncTaskItem
+
+type AdminAidgpConnectionTestReq struct {
+	g.Meta `path:"/admin/aidgp/connection-test" method:"post" tags:"V1/Admin" sm:"test AIDGP connection"`
+}
+
+type AdminAidgpConnectionTestRes struct {
+	Provider string `json:"provider"`
+	Success  bool   `json:"success"`
+	Message  string `json:"message"`
+	CostMs   int64  `json:"costMs"`
+}
+
+type AdminSyncFreshnessReq struct {
+	g.Meta `path:"/admin/sync/freshness" method:"get" tags:"V1/Admin" sm:"sync freshness"`
+}
+
+type AdminSyncFreshnessItem struct {
+	SyncType       string `json:"syncType"`
+	LatestTaskAt   int    `json:"latestTaskAt"`
+	LatestRecordAt int    `json:"latestRecordAt"`
+	RecordCount    int    `json:"recordCount"`
+	Status         string `json:"status"`
+}
+
+type AdminSyncFreshnessRes struct {
+	List []AdminSyncFreshnessItem `json:"list"`
+}
+
+type AdminSyncReconcileReq struct {
+	g.Meta `path:"/admin/sync/reconcile" method:"get" tags:"V1/Admin" sm:"sync reconcile report"`
+}
+
+type AdminSyncReconcileItem struct {
+	SyncType    string `json:"syncType"`
+	RawCount    int    `json:"rawCount"`
+	LocalCount  int    `json:"localCount"`
+	Difference  int    `json:"difference"`
+	LatestRawAt int    `json:"latestRawAt"`
+	Status      string `json:"status"`
+}
+
+type AdminSyncReconcileRes struct {
+	List []AdminSyncReconcileItem `json:"list"`
+}
+
 // CaseListItem ?????
 type CaseListItem struct {
 	Id                 int    `json:"id"`

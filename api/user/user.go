@@ -12,6 +12,7 @@ import (
 
 type IUserV1 interface {
 	UserLogin(ctx context.Context, req *v1.UserLoginReq) (res *v1.UserLoginRes, err error)
+	UiapCallback(ctx context.Context, req *v1.UiapCallbackReq) (res *v1.UiapCallbackRes, err error)
 	UserRegister(ctx context.Context, req *v1.UserRegisterReq) (res *v1.UserRegisterRes, err error)
 	UserPermissions(ctx context.Context, req *v1.UserPermissionsReq) (res *v1.UserPermissionsRes, err error)
 	UserBootstrap(ctx context.Context, req *v1.UserBootstrapReq) (res *v1.UserBootstrapRes, err error)

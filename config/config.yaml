@@ -53,6 +53,31 @@ qa:
       baseUrl: ""
       appKey: ""
       appSecret: ""
+      tokenPath: "/openapi/oauth/token"
+      trafficQueryPath: "/openapi/chatdb/traffic/query"
+      populationQueryPath: "/openapi/chatdb/population/query"
+      gridQueryPath: "/openapi/chatdb/grid/query"
+      knowledgeBasesPath: "/openapi/chatdb/knowledge-bases"
+      documentsPath: "/openapi/chatdb/documents"
+      documentSegmentsPath: "/openapi/chatdb/document-segments"
+      knowledgePermissionsPath: "/openapi/chatdb/knowledge-permissions"
+      timeoutSeconds: 10
+      retryTimes: 2
+      tokenExpireSkewSeconds: 120
+
+uiap:
+  enabled: false
+  baseUrl: ""
+  clientId: ""
+  clientSecret: ""
+  tokenPath: "/oauth/token"
+  userInfoPath: "/oauth/userinfo"
+  permissionPath: "/openapi/chatdb/permissions/query"
+  batchPermissionPath: "/openapi/chatdb/permissions/batch-query"
+  timeoutSeconds: 5
+  tokenExpireSkewSeconds: 120
+  permissionPollIntervalSeconds: 300
+  permissionPollPageSize: 500
 
 database:
   master:

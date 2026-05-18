@@ -16,6 +16,18 @@ type UserLoginRes struct {
 	model.User
 }
 
+type UiapCallbackReq struct {
+	g.Meta      `path:"/user/uiap/callback" method:"post" tags:"V1/User" sm:"UIAP login callback" dc:"Exchange UIAP auth code and login" noAuth:"true"`
+	Code        string `json:"code" v:"required#请填写UIAP授权码"`
+	RedirectUri string `json:"redirectUri"`
+	State       string `json:"state"`
+}
+
+type UiapCallbackRes struct {
+	model.JWTGenTokenOutput
+	model.User
+}
+
 type UserRegisterReq struct {
 	g.Meta `path:"/user/register" method:"post" tags:"V1/用户" sm:"注册" dc:"注册" noAuth:"true"`
 	model.UserRegisterInput

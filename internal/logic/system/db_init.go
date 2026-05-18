@@ -4,7 +4,9 @@ import (
 	"ai-chat-sql/internal/controller/admin"
 	"ai-chat-sql/internal/controller/ai_chat"
 	"ai-chat-sql/internal/controller/qa"
+	"ai-chat-sql/internal/logic/aidgp"
 	"ai-chat-sql/internal/logic/alert"
+	"ai-chat-sql/internal/logic/uiap"
 	"ai-chat-sql/internal/service"
 	"context"
 	"fmt"
@@ -33,8 +35,14 @@ func (s *sSystemInit) InitDB(ctx context.Context) error {
 	if err := alert.CreateAlertTables(ctx, db); err != nil {
 		return fmt.Errorf("alert table init failed: %w", err)
 	}
+	if err := uiap.CreateTables(ctx); err != nil {
+		return fmt.Errorf("uiap table init failed: %w", err)
+	}
 	if err := service.Traffic().InitTables(ctx); err != nil {
 		return fmt.Errorf("traffic table init failed: %w", err)
+	}
+	if err := aidgp.CreateTables(ctx); err != nil {
+		return fmt.Errorf("aidgp table init failed: %w", err)
 	}
 
 	if err := qa.SeedQaTables(ctx, db); err != nil {
