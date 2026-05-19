@@ -36,12 +36,19 @@ type FastPathResult struct {
 	TotalMs    int64              `json:"totalMs"`
 }
 
+type FastPathInsightMeta struct {
+	KeyPoints   []string `json:"keyPoints"`
+	Impacts     []string `json:"impacts"`
+	Suggestions []string `json:"suggestions"`
+}
+
 type FastPathFormatMeta struct {
-	Version                 string   `json:"version"`
-	Sections                []string `json:"sections"`
-	ChartRule               string   `json:"chartRule"`
-	InsightCollapsedDefault bool     `json:"insightCollapsedDefault"`
-	NaturalLanguageOnly     bool     `json:"naturalLanguageOnly"`
+	Version                 string               `json:"version"`
+	Sections                []string             `json:"sections"`
+	ChartRule               string               `json:"chartRule"`
+	InsightCollapsedDefault bool                 `json:"insightCollapsedDefault"`
+	NaturalLanguageOnly     bool                 `json:"naturalLanguageOnly"`
+	InsightMeta             *FastPathInsightMeta `json:"insightMeta,omitempty"`
 }
 
 type FastPathRouter struct{}
@@ -105,7 +112,7 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 			cached.FormatMs = 0
 			cached.TotalMs = time.Since(totalStart).Milliseconds()
 			if cached.Format.Version == "" {
-				cached.Format = buildFastPathFormatMeta(intent.legacy, cached.ChartData)
+				cached.Format = buildFastPathFormatMeta(intent.legacy, cached.Conclusion, cached.ChartData)
 			}
 			consts.Logger.Infof(ctx, "AskNumberCache hit key=%s ttl=%s intent=%s topic=%s totalMs=%d", cacheKey, ttl, intent.Intent, intent.Topic, cached.TotalMs)
 			return cached, nil
@@ -122,6 +129,13 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 	formatStart := time.Now()
 	answer := formatFastPathAnswer(intent.legacy, conclusion, chartData)
 	formatMs := time.Since(formatStart).Milliseconds()
+	format := buildFastPathFormatMeta(intent.legacy, conclusion, chartData)
+	if format.InsightMeta != nil {
+		consts.Logger.Infof(ctx, "AskNumberInsight intent=%s topic=%s keyPoints=%d impacts=%d suggestions=%d collapsed=%v",
+			intent.Intent, intent.Topic,
+			len(format.InsightMeta.KeyPoints), len(format.InsightMeta.Impacts), len(format.InsightMeta.Suggestions),
+			format.InsightCollapsedDefault)
+	}
 	result := &FastPathResult{
 		FastPath:   true,
 		CacheHit:   false,
@@ -130,7 +144,7 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 		Answer:     answer,
 		Conclusion: conclusion,
 		ChartData:  chartData,
-		Format:     buildFastPathFormatMeta(intent.legacy, chartData),
+		Format:     format,
 		QueryMs:    queryMs,
 		FormatMs:   formatMs,
 		TotalMs:    time.Since(totalStart).Milliseconds(),
@@ -193,17 +207,68 @@ func (c *ControllerV1) streamFastPathIntentAnswer(ctx context.Context, intent *F
 	return &v1.ChatRes{}, nil
 }
 
-func buildFastPathFormatMeta(fp *fastPath, chartData string) FastPathFormatMeta {
+func buildFastPathFormatMeta(fp *fastPath, conclusion string, chartData string) FastPathFormatMeta {
 	sections := []string{"精准结论", "特征洞察", "洞察分析"}
 	if strings.TrimSpace(chartData) != "" {
 		sections = []string{"精准结论", "特征洞察", "可视化", "洞察分析"}
 	}
+	insightMeta := buildInsightMeta(fp, conclusion)
+	insightCollapsedDefault := shouldCollapseInsight(insightMeta)
 	return FastPathFormatMeta{
 		Version:                 "ask-number-fastpath-v1",
 		Sections:                sections,
 		ChartRule:               fastPathChartRule(fp, chartData),
-		InsightCollapsedDefault: true,
+		InsightCollapsedDefault: insightCollapsedDefault,
 		NaturalLanguageOnly:     true,
+		InsightMeta:             insightMeta,
+	}
+}
+
+func shouldCollapseInsight(meta *FastPathInsightMeta) bool {
+	if meta == nil {
+		return true
+	}
+	total := len(meta.KeyPoints) + len(meta.Impacts) + len(meta.Suggestions)
+	if total <= 3 {
+		allShort := true
+		for _, s := range meta.KeyPoints {
+			if len([]rune(s)) > 30 {
+				allShort = false
+				break
+			}
+		}
+		if allShort {
+			for _, s := range meta.Impacts {
+				if len([]rune(s)) > 30 {
+					allShort = false
+					break
+				}
+			}
+		}
+		if allShort {
+			for _, s := range meta.Suggestions {
+				if len([]rune(s)) > 30 {
+					allShort = false
+					break
+				}
+			}
+		}
+		if allShort {
+			return false
+		}
+	}
+	return true
+}
+
+func buildInsightMeta(fp *fastPath, conclusion string) *FastPathInsightMeta {
+	keyPoints, impacts, suggestions := buildKindInsight(fp, conclusion)
+	if len(keyPoints) == 0 && len(impacts) == 0 && len(suggestions) == 0 {
+		return nil
+	}
+	return &FastPathInsightMeta{
+		KeyPoints:   keyPoints,
+		Impacts:     impacts,
+		Suggestions: suggestions,
 	}
 }
 

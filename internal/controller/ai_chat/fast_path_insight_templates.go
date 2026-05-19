@@ -1,0 +1,177 @@
+package ai_chat
+
+import "strings"
+
+// 业务阈值常量
+const (
+	trafficHighThreshold     = 50000
+	trafficYoYAlertPct       = 20.0
+	trafficMoMAlertPct       = 15.0
+	closeRateTarget          = 85.0
+	stayLongBucket           = "4h+"
+	hkMacauHighRatioPct      = 15.0
+	popHighThreshold         = 100000
+	provinceOutsideHighPct   = 40.0
+)
+
+// insightTemplate 描述单个 kind 的洞察条目模板
+type insightTemplate struct {
+	keyPoints   []string
+	impacts     []string
+	suggestions []string
+}
+
+// kindInsightTemplates 按 kind 定义洞察模板
+// 占位符 {key} 在运行时被 extractInsightData 返回的实际数值替换
+// 无法替换的占位符会导致该条目被跳过，确保前端不会收到残缺文本
+var kindInsightTemplates = map[fastPathKind]insightTemplate{
+	fpTrafficToday: {
+		keyPoints:   []string{"今日车流{total}辆", "车流处于{level}水平"},
+		impacts:     []string{"车流{level}时{peak}时段承载压力{pressure}"},
+		suggestions: []string{"建议关注高峰卡口，必要时加强{action}"},
+	},
+	fpTrafficTopGateToday: {
+		keyPoints:   []string{"最大卡口「{topGate}」车流{topCount}辆", "需关注该卡口通行效率和拥堵风险"},
+		impacts:     []string{"单卡口集中度过高时，周边道路承载压力增大"},
+		suggestions: []string{"建议对「{topGate}」增加现场疏导力量"},
+	},
+	fpTrafficWeek: {
+		keyPoints:   []string{"近{days}天日均{dailyAvg}辆", "港澳车占比{hkRatio}%"},
+		impacts:     []string{"趋势数据可辅助判断周期性波动和异常峰值"},
+		suggestions: []string{"建议关注趋势中的异常波动日，排查数据或业务原因"},
+	},
+	fpTrafficHkMacau: {
+		keyPoints:   []string{"港澳车{hkCount}辆，占比{hkRatio}%"},
+		impacts:     []string{"港澳车占比{hkLevel}，口岸及通关资源需相应调配"},
+		suggestions: []string{"占比持续偏高时建议评估通关通道容量"},
+	},
+	fpTrafficGateRank: {
+		keyPoints:   []string{"排名首位卡口「{topGate}」车流{topCount}辆"},
+		impacts:     []string{"卡口集中度反映路网负荷分布"},
+		suggestions: []string{"建议对 Top3 卡口制定差异化的疏导方案"},
+	},
+	fpTrafficWeekendCompare: {
+		keyPoints:   []string{"周末与工作日日均车流差异{diffPct}%"},
+		impacts:     []string{"周末差异可辅助调配值班和巡检资源"},
+		suggestions: []string{"差异较大时建议周末增派疏导力量"},
+	},
+	fpTrafficHolidayCompare: {
+		keyPoints:   []string{"节假日与工作日日均车流差异{diffPct}%"},
+		impacts:     []string{"节假日高峰需提前部署保障力量"},
+		suggestions: []string{"建议节前3天启动高峰应对预案"},
+	},
+	fpTrafficProvinceInside: {
+		keyPoints:   []string{"省内车{insideCount}辆（占大陆车{insidePct}%），省外车{outsideCount}辆"},
+		impacts:     []string{"省外车占比{outsideLevel}，需关注外地车涌入带来的管理压力"},
+		suggestions: []string{"省外车集中时可加强重点卡口外地车引导"},
+	},
+	fpTrafficYoY: {
+		keyPoints:   []string{"同比{dir}{yoyPct}%"},
+		impacts:     []string{"同比变化{yoyLevel}，{needPlan}调整年度通行预案"},
+		suggestions: []string{"建议结合节假日和天气因素深入分析变化原因"},
+	},
+	fpTrafficMoM: {
+		keyPoints:   []string{"环比{dir}{momPct}%"},
+		impacts:     []string{"环比变化{momLevel}，短期波动需区分趋势与噪声"},
+		suggestions: []string{"建议持续观察3个周期确认趋势方向"},
+	},
+	fpTrafficHoliday: {
+		keyPoints:   []string{"{holidayName}期间车流{total}辆，日均{dailyAvg}辆"},
+		impacts:     []string{"节假日车流集中，保障压力高于平日"},
+		suggestions: []string{"建议节前发布出行提示，节中加强卡口疏导"},
+	},
+	fpTrafficStayDistribution: {
+		keyPoints:   []string{"停留集中在{topBucket}时段", "共有{totalVehicles}辆车有停留记录"},
+		impacts:     []string{"长停留车辆可能影响区域交通和停车资源"},
+		suggestions: []string{"建议对长停留车辆核查停留原因"},
+	},
+	fpTrafficOriginByProvince: {
+		keyPoints:   []string{"省外车主要来自「{topOrigin}」，共{topCount}辆"},
+		impacts:     []string{"来源集中度可辅助跨区域协作研判"},
+		suggestions: []string{"来源地集中时可加强与对应省份的联动管理"},
+	},
+	fpTrafficOverview: {
+		keyPoints:   []string{"近七天车流{total}辆，日均{dailyAvg}辆", "港澳车占比{hkRatio}%，省内车占大陆车{insidePct}%"},
+		impacts:     []string{"多维汇总可辅助全局态势感知和资源调度"},
+		suggestions: []string{"建议对关键指标设立阈值告警，实现主动预警"},
+	},
+	fpPopWeekTrend: {
+		keyPoints:   []string{"近{days}天人流{total}人次，日均{dailyAvg}人次"},
+		impacts:     []string{"人流趋势可辅助公共服务保障和场地容量评估"},
+		suggestions: []string{"关注趋势中的异常峰值日，排查活动或突发事件"},
+	},
+	fpPopRegionRank: {
+		keyPoints:   []string{"人流最大区域「{topRegion}」，共{topCount}人次"},
+		impacts:     []string{"区域集中度反映公共服务资源分布压力"},
+		suggestions: []string{"建议对 Top3 区域提前部署服务保障力量"},
+	},
+	fpPopHourlyTrend: {
+		keyPoints:   []string{"人流高峰时段{peakHour}，峰值{peakCount}人次"},
+		impacts:     []string{"小时级分布可辅助安保和值班排班"},
+		suggestions: []string{"建议在高峰时段前30分钟启动人流疏导"},
+	},
+	fpPopOverview: {
+		keyPoints:   []string{"近七天人流{total}人次，日均{dailyAvg}人次"},
+		impacts:     []string{"综合汇总可辅助人防物防资源规划"},
+		suggestions: []string{"建议对人流超阈值区域启动分级响应"},
+	},
+	fpGridCaseCount: {
+		keyPoints:   []string{"本月案件{total}件，结案率{closeRate}%"},
+		impacts:     []string{"案件规模{caseLevel}，治理压力{pressureLevel}"},
+		suggestions: []string{"建议对未结案件加快督办，复盘高发原因"},
+	},
+	fpGridCloseRate: {
+		keyPoints:   []string{"结案率{closeRate}%，{comparedTo}目标值{target}%"},
+		impacts:     []string{"结案率反映基层治理效能和督办力度"},
+		suggestions: []string{"低于目标时建议启动专项督办机制"},
+	},
+	fpGridRegionRank: {
+		keyPoints:   []string{"案件最多区域「{topRegion}」，共{topCount}件"},
+		impacts:     []string{"区域集中度反映重点治理区域"},
+		suggestions: []string{"建议对 Top3 区域制定专项治理方案"},
+	},
+	fpGridCaseTypeDist: {
+		keyPoints:   []string{"案件类型以「{topType}」为主，占比{topPct}%"},
+		impacts:     []string{"类型分布可辅助精准配置执法资源"},
+		suggestions: []string{"建议对高发类型加强前端预防和巡查"},
+	},
+}
+
+// buildKindInsight 按 kind 模板和结论文本生成数据化洞察条目
+// 当 kind 无模板时，降级到 topic 级通用洞察
+func buildKindInsight(fp *fastPath, conclusion string) (keyPoints, impacts, suggestions []string) {
+	tmpl, ok := kindInsightTemplates[fp.kind]
+	if !ok {
+		return buildInsightItems(fp, conclusion)
+	}
+
+	data := extractInsightData(fp.kind, conclusion)
+
+	keyPoints = renderTemplateItems(tmpl.keyPoints, data)
+	impacts = renderTemplateItems(tmpl.impacts, data)
+	suggestions = renderTemplateItems(tmpl.suggestions, data)
+	return keyPoints, impacts, suggestions
+}
+
+func renderTemplateItems(templates []string, data map[string]string) []string {
+	result := make([]string, 0, len(templates))
+	for _, tmpl := range templates {
+		s := tmpl
+		for k, v := range data {
+			s = replacePlaceholder(s, k, v)
+		}
+		if containsPlaceholder(s) {
+			continue
+		}
+		result = append(result, s)
+	}
+	return result
+}
+
+func replacePlaceholder(s, key, value string) string {
+	return strings.ReplaceAll(s, "{"+key+"}", value)
+}
+
+func containsPlaceholder(s string) bool {
+	return strings.Contains(s, "{") && strings.Contains(s, "}")
+}

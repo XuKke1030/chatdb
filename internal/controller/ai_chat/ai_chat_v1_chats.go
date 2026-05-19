@@ -1180,94 +1180,87 @@ func dataHint(conclusion string) string {
 }
 
 func fastPathKeyPointText(fp *fastPath, conclusion string) string {
-	switch fp.topic {
-	case "traffic":
-		base := "- 重点关注车流总量、进出方向、卡口排名和港澳车占比变化。"
-		return base + dataKeyPoint(conclusion)
-	case "population":
-		base := "- 重点关注人流总量、进出变化、区域差异和周期波动。"
-		return base + dataKeyPoint(conclusion)
-	case "grid":
-		base := "- 重点关注案件规模、办结情况、区域分布和治理压力。"
-		return base + dataKeyPoint(conclusion)
-	default:
-		return "- 当前结果反映了所选口径下的主要业务变化。" + dataKeyPoint(conclusion)
-	}
-}
-
-// dataKeyPoint 从结论中提取变化方向关键词补充关键点
-func dataKeyPoint(conclusion string) string {
-	if conclusion == "" {
+	keyPoints, _, _ := buildKindInsight(fp, conclusion)
+	if len(keyPoints) == 0 {
 		return ""
 	}
-	if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
-		return "\n- 当前呈增长趋势，需关注增长驱动因素及资源承载能力。"
-	}
-	if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
-		return "\n- 当前呈下降趋势，需排查下降原因及是否属于正常波动。"
-	}
-	if strings.Contains(conclusion, "持平") {
-		return "\n- 当前整体平稳，无显著异常波动。"
-	}
-	return ""
+	return "- " + strings.Join(keyPoints, "\n- ")
 }
 
 func fastPathImpactText(fp *fastPath, conclusion string) string {
-	switch fp.topic {
-	case "traffic":
-		base := "- 可为交通疏导、口岸保障、卡口运行和设备运维提供参考。"
-		return base + impactFromConclusion(conclusion)
-	case "population":
-		base := "- 可为公共服务保障、人员流动研判和重点区域调度提供参考。"
-		return base + impactFromConclusion(conclusion)
-	case "grid":
-		base := "- 可为基层治理、案件督办和资源配置提供参考。"
-		return base + impactFromConclusion(conclusion)
-	default:
-		return "- 可辅助业务管理人员快速掌握当前运行态势。" + impactFromConclusion(conclusion)
-	}
-}
-
-// impactFromConclusion 根据结论中的数据量级补充业务影响描述
-func impactFromConclusion(conclusion string) string {
-	if conclusion == "" {
+	_, impacts, _ := buildKindInsight(fp, conclusion)
+	if len(impacts) == 0 {
 		return ""
 	}
-	// 检测是否包含大数值（万级以上）以提示资源影响
-	if strings.Contains(conclusion, "万") {
-		return "\n- 数据量级较大，建议重点关注高峰时段的保障能力。"
-	}
-	return ""
+	return "- " + strings.Join(impacts, "\n- ")
 }
 
 func fastPathSuggestionText(fp *fastPath, conclusion string) string {
-	switch fp.topic {
-	case "traffic":
-		base := "- 建议持续关注高峰卡口和异常波动点位，必要时加强现场疏导和设备巡检。"
-		return base + suggestionFromConclusion(conclusion)
-	case "population":
-		base := "- 建议关注人流集中的区域和时段，提前做好服务保障和秩序维护。"
-		return base + suggestionFromConclusion(conclusion)
-	case "grid":
-		base := "- 建议对案件高发区域和未办结事项加强跟踪督办，复盘高发原因。"
-		return base + suggestionFromConclusion(conclusion)
-	default:
-		return "- 建议结合后续数据变化持续跟踪，并对异常项开展复核。" + suggestionFromConclusion(conclusion)
-	}
-}
-
-// suggestionFromConclusion 根据结论中的变化趋势补充具体建议
-func suggestionFromConclusion(conclusion string) string {
-	if conclusion == "" {
+	_, _, suggestions := buildKindInsight(fp, conclusion)
+	if len(suggestions) == 0 {
 		return ""
 	}
-	if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
-		return "\n- 增长趋势明显时，建议提前部署应急疏导和运力调配预案。"
+	return "- " + strings.Join(suggestions, "\n- ")
+}
+
+// buildInsightItems 统一生成洞察条目数据，供文本格式化和结构化元数据共用
+func buildInsightItems(fp *fastPath, conclusion string) (keyPoints, impacts, suggestions []string) {
+	// --- 关键/异常点 ---
+	switch fp.topic {
+	case "traffic":
+		keyPoints = append(keyPoints, "重点关注车流总量、进出方向、卡口排名和港澳车占比变化")
+	case "population":
+		keyPoints = append(keyPoints, "重点关注人流总量、进出变化、区域差异和周期波动")
+	case "grid":
+		keyPoints = append(keyPoints, "重点关注案件规模、办结情况、区域分布和治理压力")
+	default:
+		keyPoints = append(keyPoints, "当前结果反映了所选口径下的主要业务变化")
 	}
-	if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
-		return "\n- 下降趋势下建议核查数据接入完整性，排除采集异常后再做研判。"
+	if conclusion != "" {
+		if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
+			keyPoints = append(keyPoints, "当前呈增长趋势，需关注增长驱动因素及资源承载能力")
+		} else if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
+			keyPoints = append(keyPoints, "当前呈下降趋势，需排查下降原因及是否属于正常波动")
+		} else if strings.Contains(conclusion, "持平") {
+			keyPoints = append(keyPoints, "当前整体平稳，无显著异常波动")
+		}
 	}
-	return ""
+
+	// --- 业务影响 ---
+	switch fp.topic {
+	case "traffic":
+		impacts = append(impacts, "可为交通疏导、口岸保障、卡口运行和设备运维提供参考")
+	case "population":
+		impacts = append(impacts, "可为公共服务保障、人员流动研判和重点区域调度提供参考")
+	case "grid":
+		impacts = append(impacts, "可为基层治理、案件督办和资源配置提供参考")
+	default:
+		impacts = append(impacts, "可辅助业务管理人员快速掌握当前运行态势")
+	}
+	if conclusion != "" && strings.Contains(conclusion, "万") {
+		impacts = append(impacts, "数据量级较大，建议重点关注高峰时段的保障能力")
+	}
+
+	// --- 优化建议 ---
+	switch fp.topic {
+	case "traffic":
+		suggestions = append(suggestions, "持续关注高峰卡口和异常波动点位，必要时加强现场疏导和设备巡检")
+	case "population":
+		suggestions = append(suggestions, "关注人流集中的区域和时段，提前做好服务保障和秩序维护")
+	case "grid":
+		suggestions = append(suggestions, "对案件高发区域和未办结事项加强跟踪督办，复盘高发原因")
+	default:
+		suggestions = append(suggestions, "结合后续数据变化持续跟踪，并对异常项开展复核")
+	}
+	if conclusion != "" {
+		if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
+			suggestions = append(suggestions, "增长趋势明显时，建议提前部署应急疏导和运力调配预案")
+		} else if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
+			suggestions = append(suggestions, "下降趋势下建议核查数据接入完整性，排除采集异常后再做研判")
+		}
+	}
+
+	return keyPoints, impacts, suggestions
 }
 
 // ---- Traffic fast paths ----

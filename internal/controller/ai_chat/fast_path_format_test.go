@@ -1,6 +1,7 @@
 package ai_chat
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -40,12 +41,12 @@ func TestFormatFastPathAnswerSectionsAndChartRule(t *testing.T) {
 	if strings.Contains(ratioAnswer, "## 可视化") {
 		t.Fatalf("single ratio answer should not include visualization section")
 	}
-	ratioMeta := buildFastPathFormatMeta(ratioPath, "")
+	ratioMeta := buildFastPathFormatMeta(ratioPath, "港澳车占比 10%。", "")
 	if ratioMeta.ChartRule != "no_chart_single_value_or_ratio" {
 		t.Fatalf("expected no-chart rule, got %s", ratioMeta.ChartRule)
 	}
-	if !ratioMeta.InsightCollapsedDefault || !ratioMeta.NaturalLanguageOnly {
-		t.Fatalf("expected collapsed insight and natural-language-only flags")
+	if !ratioMeta.NaturalLanguageOnly {
+		t.Fatalf("expected natural-language-only flag")
 	}
 
 	rankPath := &fastPath{kind: fpTrafficGateRank, topic: "traffic"}
@@ -54,8 +55,151 @@ func TestFormatFastPathAnswerSectionsAndChartRule(t *testing.T) {
 	if !strings.Contains(rankAnswer, "## 可视化") {
 		t.Fatalf("rank answer should include visualization section")
 	}
-	rankMeta := buildFastPathFormatMeta(rankPath, rankChart)
+	rankMeta := buildFastPathFormatMeta(rankPath, "今日车流排名。", rankChart)
 	if rankMeta.ChartRule != "bar_rank" {
 		t.Fatalf("expected bar_rank rule, got %s", rankMeta.ChartRule)
+	}
+}
+
+func TestBuildInsightMeta(t *testing.T) {
+	tests := []struct {
+		topic      string
+		kind       fastPathKind
+		conclusion string
+		wantKP     int
+		wantImp    int
+		wantSug    int
+	}{
+		{topic: "traffic", kind: fpTrafficToday, conclusion: "今日车流总计 12500 辆，其中进入 6200 辆，离开 6300 辆。港澳车 1200 辆，占比 9.6%。", wantKP: 1, wantImp: 1, wantSug: 1},
+		{topic: "population", kind: fpPopWeekTrend, conclusion: "近七天人流 52000 人次，日均 7429 人次。", wantKP: 1, wantImp: 1, wantSug: 1},
+		{topic: "grid", kind: fpGridCaseCount, conclusion: "本月案件 320 件，结案率 78.5%。", wantKP: 1, wantImp: 1, wantSug: 1},
+	}
+	for _, tc := range tests {
+		fp := &fastPath{topic: tc.topic, kind: tc.kind}
+		meta := buildInsightMeta(fp, tc.conclusion)
+		if meta == nil {
+			t.Fatalf("expected non-nil insightMeta for topic=%s kind=%v", tc.topic, tc.kind)
+		}
+		if len(meta.KeyPoints) < tc.wantKP {
+			t.Fatalf("expected ≥%d keyPoints for topic=%s kind=%v, got %d (items=%v)", tc.wantKP, tc.topic, tc.kind, len(meta.KeyPoints), meta.KeyPoints)
+		}
+		if len(meta.Impacts) < tc.wantImp {
+			t.Fatalf("expected ≥%d impacts for topic=%s kind=%v, got %d", tc.wantImp, tc.topic, tc.kind, len(meta.Impacts))
+		}
+		if len(meta.Suggestions) < tc.wantSug {
+			t.Fatalf("expected ≥%d suggestions for topic=%s kind=%v, got %d", tc.wantSug, tc.topic, tc.kind, len(meta.Suggestions))
+		}
+	}
+}
+
+func TestConditionalInsightCollapse(t *testing.T) {
+	// Use a kind without a specific template → falls back to topic-level buildInsightItems
+	// fpTrafficForeignOrigin has no template entry, so it uses the generic topic path
+	noTemplateFP := &fastPath{topic: "traffic", kind: fpTrafficForeignOrigin}
+	noTemplateMeta := buildInsightMeta(noTemplateFP, "持平")
+	if noTemplateMeta == nil {
+		t.Fatal("expected non-nil insightMeta for no-template kind")
+	}
+	total := len(noTemplateMeta.KeyPoints) + len(noTemplateMeta.Impacts) + len(noTemplateMeta.Suggestions)
+	if total <= 3 {
+		if shouldCollapseInsight(noTemplateMeta) {
+			t.Fatalf("≤3 short items should not be collapsed, got %d items", total)
+		}
+	}
+
+	// Kind with template + growth keyword → multiple items → should collapse
+	growthFP := &fastPath{topic: "traffic", kind: fpTrafficToday}
+	growthMeta := buildInsightMeta(growthFP, "今日车流总计 12500 辆，较昨日增长 15%")
+	if growthMeta == nil {
+		t.Fatal("expected non-nil insightMeta for growth insight")
+	}
+	if !shouldCollapseInsight(growthMeta) {
+		t.Fatal("growth insight with data should be collapsed")
+	}
+
+	// nil meta → should default to collapsed
+	if !shouldCollapseInsight(nil) {
+		t.Fatal("nil insightMeta should default to collapsed")
+	}
+}
+
+func TestInsightMetaInFormatMeta(t *testing.T) {
+	fp := &fastPath{kind: fpTrafficHkMacau, topic: "traffic"}
+	meta := buildFastPathFormatMeta(fp, "港澳车占比 10%。", "")
+	if meta.InsightMeta == nil {
+		t.Fatal("expected InsightMeta to be populated in format meta")
+	}
+	if len(meta.InsightMeta.KeyPoints) == 0 {
+		t.Fatal("expected at least 1 keyPoint in InsightMeta")
+	}
+}
+
+// TestKindInsightQuality 验证每个有模板的 kind 至少产生 1 条洞察
+func TestKindInsightQuality(t *testing.T) {
+	conclusions := map[fastPathKind]string{
+		fpTrafficToday:           "今日车流总计 12500 辆，其中进入 6200 辆，离开 6300 辆。港澳车 1200 辆，占比 9.6%。",
+		fpTrafficTopGateToday:    "今日车流量最大的卡口为「皇岗口岸」，共 3500 辆。",
+		fpTrafficWeek:            "近7天车流总计 85000 辆，日均 12143 辆。港澳车占比 8.5%。",
+		fpTrafficHkMacau:         "近七天车流中，港澳车 5200 辆，占总车流 8.5%；内地车 56200 辆，占比 91.5%。",
+		fpTrafficGateRank:        "排名首位卡口「皇岗口岸」车流 3500 辆。",
+		fpTrafficWeekendCompare:  "周末与工作日日均车流差异 18.5%。",
+		fpTrafficHolidayCompare:  "节假日与工作日日均车流差异 25.3%。",
+		fpTrafficProvinceInside:  "近七天车流中，省内车 35000 辆（占大陆车62.5%），省外车 21000 辆。",
+		fpTrafficYoY:             "近七天车流同比增长 22.5%。",
+		fpTrafficMoM:             "近一个月车流环比增长 12.5%。",
+		fpTrafficHoliday:         "国庆期间车流总计 28000 辆，日均 4000 辆。",
+		fpTrafficStayDistribution: "近七天共有 8500 辆车有停留记录，主要集中在0-30min时段。",
+		fpTrafficOriginByProvince: "近七天省外车主要来自「湖南」，共 5200 辆。",
+		fpTrafficOverview:        "近七天车流总计 85000 辆，日均 12143 辆。港澳车占比 8.5%，省内车占大陆车 62.5%。",
+		fpPopWeekTrend:           "近七天人流 52000 人次，日均 7429 人次。",
+		fpPopRegionRank:          "人流最大区域「罗湖区」，共 15000 人次。",
+		fpPopHourlyTrend:         "人流高峰时段14:00，峰值 3200 人次。",
+		fpPopOverview:            "近七天人流 52000 人次，日均 7429 人次。",
+		fpGridCaseCount:          "本月案件 320 件，结案率 78.5%。",
+		fpGridCloseRate:          "结案率 78.5%，低于目标值85%。",
+		fpGridRegionRank:         "案件最多区域「XX社区」，共 85 件。",
+		fpGridCaseTypeDist:       "案件类型以「城市管理」为主，占比 35.2%。",
+	}
+
+	for kind, conclusion := range conclusions {
+		t.Run(fastPathIntentName(kind), func(t *testing.T) {
+			fp := &fastPath{kind: kind, topic: kindTopic(kind)}
+			meta := buildInsightMeta(fp, conclusion)
+			if meta == nil {
+				t.Fatalf("kind=%v: expected non-nil insightMeta", kind)
+			}
+			total := len(meta.KeyPoints) + len(meta.Impacts) + len(meta.Suggestions)
+			if total == 0 {
+				t.Fatalf("kind=%v: expected ≥1 insight items, got 0", kind)
+			}
+		})
+	}
+}
+
+// TestInsightTextContainsNumbers 验证洞察文本包含实际数值
+func TestInsightTextContainsNumbers(t *testing.T) {
+	numRe := regexp.MustCompile(`\d+`)
+	fp := &fastPath{kind: fpTrafficToday, topic: "traffic"}
+	answer := formatFastPathAnswer(fp, "今日车流总计 12500 辆。", "")
+	insightSection := strings.Split(answer, "## 洞察分析")
+	if len(insightSection) < 2 {
+		t.Fatal("expected 洞察分析 section in answer")
+	}
+	if !numRe.MatchString(insightSection[1]) {
+		t.Fatal("expected insight section to contain numeric values")
+	}
+}
+
+// kindTopic 返回 kind 对应的 topic，用于测试
+func kindTopic(kind fastPathKind) string {
+	switch {
+	case kind >= fpTrafficToday && kind <= fpTrafficOverview:
+		return "traffic"
+	case kind >= fpPopWeekTrend && kind <= fpPopOverview:
+		return "population"
+	case kind >= fpGridCaseCount && kind <= fpGridCaseTypeDist:
+		return "grid"
+	default:
+		return ""
 	}
 }
