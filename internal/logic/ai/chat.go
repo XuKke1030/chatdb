@@ -176,9 +176,21 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		Content: in.Message,
 	})
 
-	out, err := aiAgent.Stream(ctx, messages)
+	// 整体超时保护：60s 内必须完成，否则发送超时错误
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer timeoutCancel()
+
+	out, err := aiAgent.Stream(timeoutCtx, messages)
 	if err != nil {
 		cancel()
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+				Event: "error",
+				Data:  g.Map{"message": "查询超时，请尝试简化问题或换一种问法"},
+			}, respChan)
+			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
+			close(respChan)
+		}
 		return
 	}
 	logStage("agent_stream")

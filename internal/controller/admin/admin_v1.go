@@ -3,6 +3,7 @@ package admin
 import (
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/logic/aidgp"
+	"ai-chat-sql/internal/service"
 	"bytes"
 	"context"
 	"encoding/csv"
@@ -396,6 +397,28 @@ func (c *ControllerV1) AdminSyncGridData(ctx context.Context, req *v1.AdminSyncG
 
 func (c *ControllerV1) AdminSyncTrafficData(ctx context.Context, req *v1.AdminSyncTrafficDataReq) (res *v1.AdminSyncRes, err error) {
 	return executeAdminAidgpSync(ctx, aidgp.SyncTrafficData, "")
+}
+
+func (c *ControllerV1) AdminRefreshTrafficAggregates(ctx context.Context, req *v1.AdminRefreshTrafficAggregatesReq) (res *v1.AdminRefreshTrafficAggregatesRes, err error) {
+	if err := service.Traffic().RefreshAggregates(ctx, req.DateFrom, req.DateTo); err != nil {
+		return nil, err
+	}
+	return &v1.AdminRefreshTrafficAggregatesRes{Ok: true}, nil
+}
+
+func (c *ControllerV1) AdminSyncHoliday(ctx context.Context, req *v1.AdminSyncHolidayReq) (res *v1.AdminSyncHolidayRes, err error) {
+	if err := service.Traffic().SyncHolidaysFromCode(ctx); err != nil {
+		return nil, err
+	}
+	return &v1.AdminSyncHolidayRes{Ok: true}, nil
+}
+
+func (c *ControllerV1) AdminPlateVerify(ctx context.Context, req *v1.AdminPlateVerifyReq) (res *v1.AdminPlateVerifyRes, err error) {
+	report, err := service.Traffic().BatchVerify(ctx, req.SampleSize)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminPlateVerifyRes{VerifyReport: *report}, nil
 }
 
 func (c *ControllerV1) AdminSyncPopulationData(ctx context.Context, req *v1.AdminSyncPopulationDataReq) (res *v1.AdminSyncRes, err error) {

@@ -44,6 +44,9 @@ func (s *sSystemInit) InitDB(ctx context.Context) error {
 	if err := aidgp.CreateTables(ctx); err != nil {
 		return fmt.Errorf("aidgp table init failed: %w", err)
 	}
+	if err := service.Traffic().SyncHolidaysFromCode(ctx); err != nil {
+		return fmt.Errorf("traffic holiday sync failed: %w", err)
+	}
 
 	if err := qa.SeedQaTables(ctx, db); err != nil {
 		return fmt.Errorf("qa seed init failed: %w", err)

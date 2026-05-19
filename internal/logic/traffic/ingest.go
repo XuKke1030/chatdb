@@ -247,5 +247,6 @@ func normalizePlate(plate string) string {
 	plate = strings.ReplaceAll(plate, " ", "")
 	plate = strings.ReplaceAll(plate, "-", "")
 	plate = strings.ReplaceAll(plate, "路", "")
+	plate = strings.TrimRight(plate, "警学")
 	return strings.ToUpper(plate)
 }

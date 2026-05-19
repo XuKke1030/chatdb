@@ -43,81 +43,105 @@ func sendStreamError(ctx context.Context, respChan chan any, err error) {
 	}, respChan)
 }
 
+type chunkResult struct {
+	chunk *schema.Message
+	err   error
+}
+
 func (s *sAiChat) AiChatStreamOut(ctx context.Context, respChan chan any, stream *schema.StreamReader[*schema.Message], cancel context.CancelFunc) {
 	g.Go(ctx, func(ctx context.Context) {
 		defer close(respChan)
 
 		state := stateBuffering
-		var buffer strings.Builder // 判定窗口缓冲
-		var clarifyBuf strings.Builder // 澄清块 JSON 缓冲
+		var buffer strings.Builder
+		var clarifyBuf strings.Builder
+
+		// 首个 token 30s 超时，后续每个 chunk 15s 超时
+		timeoutCh := time.After(30 * time.Second)
 
 		for {
-			chunk, err := stream.Recv()
-			if errors.Is(err, io.EOF) {
-				// 根据最终状态处理剩余缓冲
-				switch state {
-				case stateBuffering:
-					if buffer.Len() > 0 {
-						_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
-							Event:   "message",
-							Content: buffer.String(),
-							Role:    "assistant",
-						}, respChan)
-					}
-				case stateClarification:
-					emitClarification(ctx, respChan, clarifyBuf.String())
-				}
+			chCh := make(chan chunkResult, 1)
+			go func() {
+				ch, e := stream.Recv()
+				chCh <- chunkResult{ch, e}
+			}()
+
+			select {
+			case <-timeoutCh:
+				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+					Event: "error",
+					Data:  g.Map{"message": "查询超时，请尝试简化问题或换一种问法"},
+				}, respChan)
 				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 				cancel()
 				return
-			}
-			if err != nil {
-				sendStreamError(ctx, respChan, err)
-				consts.Logger.Errorf(ctx, "AiChatStreamOut 流读取错误: %v", err)
-				cancel()
-				return
-			}
 
-			content := chunk.Content
-			if content == "" {
-				continue
-			}
+			case res := <-chCh:
+				timeoutCh = time.After(15 * time.Second)
 
-			switch state {
-			case stateBuffering:
-				buffer.WriteString(content)
-				buf := buffer.String()
-				if strings.HasPrefix(buf, clarifyPrefix) {
-					// 判定为澄清块，切换到澄清模式
-					state = stateClarification
-					clarifyBuf.WriteString(buf[len(clarifyPrefix):])
-					buffer.Reset()
-				} else if len(buf) >= clarifyDetectWindow {
-					// 缓冲窗口已满且不是澄清块，切换到正常模式
-					state = stateNormal
-					_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
-						Event:   "message",
-						Content: buf,
-						Role:    gconv.String(chunk.Role),
-					}, respChan)
-					buffer.Reset()
+				if errors.Is(res.err, io.EOF) {
+					switch state {
+					case stateBuffering:
+						if buffer.Len() > 0 {
+							_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+								Event:   "message",
+								Content: buffer.String(),
+								Role:    "assistant",
+							}, respChan)
+						}
+					case stateClarification:
+						emitClarification(ctx, respChan, clarifyBuf.String())
+					}
+					_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
+					cancel()
+					return
 				}
 
-			case stateNormal:
-				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
-					Event:   "message",
-					Content: content,
-					Role:    gconv.String(chunk.Role),
-				}, respChan)
+				if res.err != nil {
+					sendStreamError(ctx, respChan, res.err)
+					consts.Logger.Errorf(ctx, "AiChatStreamOut 流读取错误: %v", res.err)
+					cancel()
+					return
+				}
 
-			case stateClarification:
-				clarifyBuf.WriteString(content)
-				// 检测到结束的 ``` 标记，发射澄清事件并切换到正常模式
-				buf := clarifyBuf.String()
-				if idx := strings.Index(buf, "```"); idx >= 0 {
-					emitClarification(ctx, respChan, buf)
-					clarifyBuf.Reset()
-					state = stateNormal
+				content := res.chunk.Content
+				if content == "" {
+					continue
+				}
+
+				switch state {
+				case stateBuffering:
+					buffer.WriteString(content)
+					buf := buffer.String()
+					if strings.HasPrefix(buf, clarifyPrefix) {
+						state = stateClarification
+						clarifyBuf.WriteString(buf[len(clarifyPrefix):])
+						buffer.Reset()
+					} else if len(buf) >= clarifyDetectWindow {
+						state = stateNormal
+						_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+							Event:   "message",
+							Content: buf,
+							Role:    gconv.String(res.chunk.Role),
+						}, respChan)
+						buffer.Reset()
+					}
+
+				case stateNormal:
+					_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+						Event:   "message",
+						Content: content,
+						Role:    gconv.String(res.chunk.Role),
+					}, respChan)
+
+				case stateClarification:
+					clarifyBuf.WriteString(content)
+					buf := clarifyBuf.String()
+					if idx := strings.Index(buf, "```"); idx >= 0 {
+						emitClarification(ctx, respChan, buf)
+						clarifyBuf.Reset()
+						state = stateNormal
+					}
 				}
 			}
 		}
@@ -130,7 +154,6 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, respChan chan any, stream
 // emitClarification 从原始缓冲内容中解析澄清 JSON 并发送 clarification SSE 事件。
 // 如果 ``` 结束标记后有额外文本，会作为 message 事件补发。
 func emitClarification(ctx context.Context, respChan chan any, raw string) {
-	// 找到第一个 ``` 结束标记的位置
 	endIdx := strings.Index(raw, "```")
 	jsonStr := raw
 	trailing := ""
@@ -142,7 +165,6 @@ func emitClarification(ctx context.Context, respChan chan any, raw string) {
 
 	var data model.ClarificationData
 	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		// JSON 解析失败，降级为普通消息
 		consts.Logger.Errorf(ctx, "clarify JSON 解析失败: %v, raw: %s", err, raw)
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event:   "message",
@@ -157,7 +179,6 @@ func emitClarification(ctx context.Context, respChan chan any, raw string) {
 		Data:  data,
 	}, respChan)
 
-	// 如果结束标记后还有额外文本，补发为 message 事件
 	if trailing != "" {
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event:   "message",

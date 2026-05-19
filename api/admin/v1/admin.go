@@ -1,6 +1,10 @@
 package v1
 
-import "github.com/gogf/gf/v2/frame/g"
+import (
+	"ai-chat-sql/internal/model"
+
+	"github.com/gogf/gf/v2/frame/g"
+)
 
 type TopicPermission struct {
 	Topic   string `json:"topic"`
@@ -277,6 +281,33 @@ type AdminSyncGridDataReq struct {
 
 type AdminSyncTrafficDataReq struct {
 	g.Meta `path:"/admin/sync/traffic-data" method:"post" tags:"V1/Admin" sm:"sync traffic data"`
+}
+
+type AdminRefreshTrafficAggregatesReq struct {
+	g.Meta   `path:"/admin/traffic/refresh-aggregates" method:"post" tags:"V1/Admin" sm:"refresh traffic aggregates"`
+	DateFrom string `json:"dateFrom" d:"" dc:"起始日期 Y-m-d"`
+	DateTo   string `json:"dateTo" d:"" dc:"截止日期 Y-m-d"`
+}
+
+type AdminSyncHolidayReq struct {
+	g.Meta `path:"/admin/traffic/sync-holidays" method:"post" tags:"V1/Admin" sm:"sync holidays from code"`
+}
+
+type AdminRefreshTrafficAggregatesRes struct {
+	Ok bool `json:"ok"`
+}
+
+type AdminSyncHolidayRes struct {
+	Ok bool `json:"ok"`
+}
+
+type AdminPlateVerifyReq struct {
+	g.Meta     `path:"/admin/traffic/plate/verify" method:"post" tags:"V1/Admin" sm:"batch verify plate recognition"`
+	SampleSize int `json:"sampleSize" d:"500" dc:"抽样数量"`
+}
+
+type AdminPlateVerifyRes struct {
+	model.VerifyReport
 }
 
 type AdminSyncPopulationDataReq struct {

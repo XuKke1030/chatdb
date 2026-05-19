@@ -79,16 +79,17 @@ type TrafficIngestStatusInput struct {
 }
 
 type TrafficPlateRecognition struct {
-	Plate           string `json:"plate"`
-	Normalized      string `json:"normalized"`
-	Origin          string `json:"origin"`
-	RegionType      string `json:"regionType"`
-	IsHongKongMacau bool   `json:"isHongKongMacau"`
-	Province        string `json:"province,omitempty"`
-	City            string `json:"city,omitempty"`
-	PlateType       string `json:"plateType"`
-	Confidence      string `json:"confidence"`
-	Basis           string `json:"basis"`
+	Plate            string `json:"plate"`
+	Normalized       string `json:"normalized"`
+	Origin           string `json:"origin"`
+	RegionType       string `json:"regionType"`
+	IsHongKongMacau  bool   `json:"isHongKongMacau"`
+	IsProvinceInside bool   `json:"isProvinceInside"`
+	Province         string `json:"province,omitempty"`
+	City             string `json:"city,omitempty"`
+	PlateType        string `json:"plateType"`
+	Confidence       string `json:"confidence"`
+	Basis            string `json:"basis"`
 }
 
 type TrafficAggregateQuery struct {
@@ -103,21 +104,26 @@ type TrafficAggregateQuery struct {
 }
 
 type TrafficAggregateSummary struct {
-	Total           int     `json:"total"`
-	InCount         int     `json:"inCount"`
-	OutCount        int     `json:"outCount"`
-	HkMacauCount    int     `json:"hkMacauCount"`
-	HkMacauRatio    float64 `json:"hkMacauRatio"`
-	MainlandCount   int     `json:"mainlandCount"`
-	UnknownDirCount int     `json:"unknownDirCount"`
+	Total              int     `json:"total"`
+	InCount            int     `json:"inCount"`
+	OutCount           int     `json:"outCount"`
+	HkMacauCount       int     `json:"hkMacauCount"`
+	HkMacauRatio       float64 `json:"hkMacauRatio"`
+	MainlandCount      int     `json:"mainlandCount"`
+	UnknownDirCount    int     `json:"unknownDirCount"`
+	ProvinceInsideCount  int   `json:"provinceInsideCount"`
+	ProvinceOutsideCount int   `json:"provinceOutsideCount"`
+	ProvinceInsideRatio  float64 `json:"provinceInsideRatio"`
 }
 
 type TrafficAggregateSeriesItem struct {
-	Name         string `json:"name"`
-	Total        int    `json:"total"`
-	InCount      int    `json:"inCount"`
-	OutCount     int    `json:"outCount"`
-	HkMacauCount int    `json:"hkMacauCount"`
+	Name                string `json:"name"`
+	Total               int    `json:"total"`
+	InCount             int    `json:"inCount"`
+	OutCount            int    `json:"outCount"`
+	HkMacauCount        int    `json:"hkMacauCount"`
+	ProvinceInsideCount  int   `json:"provinceInsideCount"`
+	ProvinceOutsideCount int   `json:"provinceOutsideCount"`
 }
 
 type TrafficAggregateResult struct {
@@ -213,4 +219,38 @@ type TrafficIngestStatusOutput struct {
 	TodayReceived    int    `json:"todayReceived"`
 	LatestError      string `json:"latestError"`
 	UpdatedAt        string `json:"updatedAt"`
+}
+
+type TrafficStayBucketItem struct {
+	Bucket        string  `json:"bucket"`
+	VehicleCount  int     `json:"vehicleCount"`
+	AvgStayMinutes float64 `json:"avgStayMinutes"`
+}
+
+type TrafficOriginRankItem struct {
+	Province      string `json:"province"`
+	City          string `json:"city"`
+	VehicleCount  int    `json:"vehicleCount"`
+	IsHkMacau     bool   `json:"isHkMacau"`
+}
+
+type TrafficYoYCompareItem struct {
+	Name       string `json:"name"`
+	CurrentVal int    `json:"currentVal"`
+	PriorVal   int    `json:"priorVal"`
+	ChangePct  float64 `json:"changePct"`
+}
+
+
+type VerifyReport struct {
+	Total         int                     `json:"total"`
+	ByType        map[string]int          `json:"byType"`
+	ByConfidence  map[string]int          `json:"byConfidence"`
+	LowConfidence []VerifySampleItem      `json:"lowConfidence"`
+}
+
+type VerifySampleItem struct {
+	PlateChar  string                    `json:"plateChar"`
+	Normalized string                    `json:"normalized"`
+	Recognized TrafficPlateRecognition   `json:"recognized"`
 }

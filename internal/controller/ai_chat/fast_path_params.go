@@ -13,12 +13,13 @@ import (
 
 // ExtractedParams 从用户消息中提取的结构化参数
 type ExtractedParams struct {
-	DateFrom   string  // 起始日期 Y-m-d
-	DateTo     string  // 截止日期 Y-m-d
-	GateName   string  // 卡口名称（如"拱北口岸"）
-	RegionName string  // 区域名称（如"香洲区"）
-	Days       int     // 天数（近N天）
-	CompareRef string  // 对比基准：weekend/holiday/lastweek
+	DateFrom     string  // 起始日期 Y-m-d
+	DateTo       string  // 截止日期 Y-m-d
+	GateName     string  // 卡口名称（如"拱北口岸"）
+	RegionName   string  // 区域名称（如"香洲区"）
+	Days         int     // 天数（近N天）
+	CompareRef   string  // 对比基准：weekend/holiday/lastweek/yoy/mom
+	HolidayName  string  // 节假日名称（如"国庆"、"春节"）
 }
 
 // dateRangeParams 尝试从问题中提取时间范围，返回 (from, to, days, ok)
@@ -124,6 +125,12 @@ func compareRefParams(q string) string {
 	if containsAny(q, []string{"周末", "周六周日", "周末和平日", "周末和工作日"}) {
 		return "weekend"
 	}
+	if containsAny(q, []string{"同比", "去年同期", "去年", "比去年同期"}) {
+		return "yoy"
+	}
+	if containsAny(q, []string{"环比", "上月", "比上月", "比上月同期"}) {
+		return "mom"
+	}
 	if containsAny(q, []string{"上周", "上一周", "环比", "上周同期", "对比上周"}) {
 		return "lastweek"
 	}
@@ -159,7 +166,28 @@ func ExtractFastPathParams(ctx context.Context, topic, question string) Extracte
 	// 对比基准
 	p.CompareRef = compareRefParams(question)
 
+	// 节假日名称提取
+	p.HolidayName = holidayNameParams(question)
+
 	return p
+}
+
+// holidayNameParams 从问题中提取节假日名称
+func holidayNameParams(q string) string {
+	q = strings.TrimSpace(q)
+	pairs := []struct {
+		key   string
+		value string
+	}{
+		{"国庆", "国庆"}, {"春节", "春节"}, {"元旦", "元旦"}, {"清明", "清明"},
+		{"劳动节", "劳动"}, {"五一", "劳动"}, {"端午", "端午"}, {"中秋", "中秋"},
+	}
+	for _, p := range pairs {
+		if strings.Contains(q, p.key) {
+			return p.value
+		}
+	}
+	return ""
 }
 
 // ---- 卡口名称缓存 ----

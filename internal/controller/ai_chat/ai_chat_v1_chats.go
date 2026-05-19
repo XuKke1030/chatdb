@@ -928,6 +928,12 @@ const (
 	fpTrafficHolidayCompare                     // 节假日和平日对比
 	fpTrafficForeignOrigin                      // 外地车来源排名
 	fpTrafficDwellTop                           // 驻留时长Top车辆
+	fpTrafficProvinceInside                    // 省内车占比
+	fpTrafficYoY                               // 同比
+	fpTrafficMoM                               // 环比
+	fpTrafficHoliday                           // 节假日车流查询
+	fpTrafficStayDistribution                  // 停留时长分布
+	fpTrafficOriginByProvince                  // 外省来源排名
 	fpPopWeekTrend                              // 近七天进出趋势
 	fpPopHolidayCompare                         // 节假日对比
 	fpPopRegionRank                             // 区域人流排名
@@ -936,6 +942,8 @@ const (
 	fpGridCloseRate                             // 结案率
 	fpGridRegionRank                            // 区域排名
 	fpGridCaseTypeDist                          // 案件类型分布
+	fpTrafficOverview                          // 车流整体情况（复合）
+	fpPopOverview                              // 人流综合分析（复合）
 )
 
 type fastPath struct {
@@ -979,6 +987,27 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"驻留", "停留", "驻留时长", "停留时长", "驻留最久", "停留最久", "停最久", "停最长"}) {
 			return &fastPath{kind: fpTrafficDwellTop, topic: topic}
 		}
+		if containsAny(q, []string{"省内车", "省内占比", "省外车", "省外占比", "省内车占比", "省外车占比", "省内比例"}) {
+			return &fastPath{kind: fpTrafficProvinceInside, topic: topic}
+		}
+		if containsAny(q, []string{"同比", "去年同期", "去年车流", "比去年"}) {
+			return &fastPath{kind: fpTrafficYoY, topic: topic}
+		}
+		if containsAny(q, []string{"环比", "比上月", "上月车流", "环比变化"}) {
+			return &fastPath{kind: fpTrafficMoM, topic: topic}
+		}
+		if containsAny(q, []string{"国庆车流", "春节车流", "元旦车流", "清明车流", "劳动节车流", "端午车流", "中秋车流"}) {
+			return &fastPath{kind: fpTrafficHoliday, topic: topic}
+		}
+		if containsAny(q, []string{"停留分布", "停留时长分布", "停多久", "停留分桶", "驻留分布"}) {
+			return &fastPath{kind: fpTrafficStayDistribution, topic: topic}
+		}
+		if containsAny(q, []string{"外省来源排名", "各省车流", "来源省排名", "省外来源"}) {
+			return &fastPath{kind: fpTrafficOriginByProvince, topic: topic}
+		}
+		if containsAny(q, []string{"车流整体", "车流情况", "车流概况", "车流综合", "车流怎么样", "车流总览"}) {
+			return &fastPath{kind: fpTrafficOverview, topic: topic}
+		}
 	case "population":
 		if containsAny(q, []string{"近七", "近7", "最近七天", "最近7天", "一周人流", "7天人流", "进出趋势", "人流趋势"}) {
 			return &fastPath{kind: fpPopWeekTrend, topic: topic}
@@ -991,6 +1020,9 @@ func matchFastPath(topic, question string) *fastPath {
 		}
 		if containsAny(q, []string{"按小时", "每小时", "小时趋势", "时段分布", "几点最多", "高峰时段", "人流量分布"}) {
 			return &fastPath{kind: fpPopHourlyTrend, topic: topic}
+		}
+		if containsAny(q, []string{"人流整体", "人流情况", "人流概况", "人流综合", "人流怎么样", "人流总览"}) {
+			return &fastPath{kind: fpPopOverview, topic: topic}
 		}
 	case "grid":
 		if containsAny(q, []string{"案件数量", "有多少案件", "案件数", "案件总数"}) {
@@ -1030,8 +1062,24 @@ func executeFastPath(ctx context.Context, fp *fastPath) (answer string, chartDat
 		return fastTrafficForeignOrigin(ctx, p)
 	case fpTrafficDwellTop:
 		return fastTrafficDwellTop(ctx, p)
+	case fpTrafficProvinceInside:
+		return fastTrafficProvinceInside(ctx, p)
+	case fpTrafficYoY:
+		return fastTrafficYoY(ctx, p)
+	case fpTrafficMoM:
+		return fastTrafficMoM(ctx, p)
+	case fpTrafficHoliday:
+		return fastTrafficHoliday(ctx, p)
+	case fpTrafficStayDistribution:
+		return fastTrafficStayDistribution(ctx, p)
+	case fpTrafficOriginByProvince:
+		return fastTrafficOriginByProvince(ctx, p)
+	case fpTrafficOverview:
+		return fastTrafficOverview(ctx, p)
 	case fpPopWeekTrend, fpPopHolidayCompare, fpPopRegionRank, fpPopHourlyTrend:
 		return fastPopQuery(ctx, fp.kind)
+	case fpPopOverview:
+		return fastPopOverview(ctx, p)
 	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist:
 		return fastGridQueryStable(ctx, fp.kind)
 	}
@@ -1048,7 +1096,7 @@ func formatFastPathAnswer(fp *fastPath, conclusion string, chartData string) str
 		conclusion,
 		"",
 		"## 特征洞察",
-		fastPathFeatureText(fp, chartData != ""),
+		fastPathFeatureText(fp, conclusion, chartData != ""),
 		"",
 	}
 	if strings.TrimSpace(chartData) != "" {
@@ -1061,88 +1109,165 @@ func formatFastPathAnswer(fp *fastPath, conclusion string, chartData string) str
 	parts = append(parts,
 		"## 洞察分析",
 		"### 关键 / 异常点",
-		fastPathKeyPointText(fp),
+		fastPathKeyPointText(fp, conclusion),
 		"",
 		"### 业务影响",
-		fastPathImpactText(fp),
+		fastPathImpactText(fp, conclusion),
 		"",
 		"### 优化建议",
-		fastPathSuggestionText(fp),
+		fastPathSuggestionText(fp, conclusion),
 	)
 	return strings.Join(parts, "\n")
 }
 
-func fastPathFeatureText(fp *fastPath, hasChart bool) string {
+func fastPathFeatureText(fp *fastPath, conclusion string, hasChart bool) string {
 	switch fp.kind {
 	case fpTrafficToday:
-		return "统计口径为当天卡口通行记录，按进入、离开、港澳车等业务维度汇总。"
+		return "统计口径为当天卡口通行记录，按进入、离开、港澳车等业务维度汇总。" + dataHint(conclusion)
 	case fpTrafficTopGateToday, fpTrafficGateRank:
-		return "统计口径为当天卡口通行记录，按卡口车流量进行排名汇总。"
+		return "统计口径为当天卡口通行记录，按卡口车流量进行排名汇总。" + dataHint(conclusion)
 	case fpTrafficWeek:
-		return "统计口径为近七天卡口通行记录，按日期进行汇总对比。"
+		return "统计口径为近七天卡口通行记录，按日期进行汇总对比。" + dataHint(conclusion)
 	case fpTrafficHkMacau:
-		return "统计口径为近七天卡口通行记录，按港澳车与其他车辆构成进行汇总。"
+		return "统计口径为近七天卡口通行记录，按港澳车与其他车辆构成进行汇总。" + dataHint(conclusion)
 	case fpTrafficWeekendCompare:
-		return "统计口径为最近一周周末与工作日的卡口通行记录，计算日均车流进行对比。"
+		return "统计口径为最近一周周末与工作日的卡口通行记录，计算日均车流进行对比。" + dataHint(conclusion)
 	case fpTrafficHolidayCompare:
-		return "统计口径为最近一个中国法定节假日假期与相邻工作日的卡口通行记录，计算日均车流进行对比。"
+		return "统计口径为最近一个中国法定节假日假期与相邻工作日的卡口通行记录，计算日均车流进行对比。" + dataHint(conclusion)
 	case fpTrafficForeignOrigin:
-		return "统计口径为近七天卡口通行记录，按车牌归属地类型进行排名汇总。"
+		return "统计口径为近七天卡口通行记录，按车牌归属地类型进行排名汇总。" + dataHint(conclusion)
 	case fpTrafficDwellTop:
-		return "统计口径为近七天卡口通行记录，按同一车牌多卡口时间差计算驻留时长。"
+		return "统计口径为近七天卡口通行记录，按同一车牌多卡口时间差计算驻留时长。" + dataHint(conclusion)
+	case fpTrafficProvinceInside:
+		return "统计口径为近七天卡口通行记录，按车牌归属地分为省内车和省外车进行汇总。" + dataHint(conclusion)
+	case fpTrafficYoY:
+		return "统计口径为当前查询周期与去年同期卡口通行记录对比。" + dataHint(conclusion)
+	case fpTrafficMoM:
+		return "统计口径为当前查询周期与上月同期卡口通行记录对比。" + dataHint(conclusion)
+	case fpTrafficHoliday:
+		return "统计口径为指定中国法定节假日期间的卡口通行记录汇总。" + dataHint(conclusion)
+	case fpTrafficStayDistribution:
+		return "统计口径为近七天卡口通行记录，按停留时长分桶统计车辆分布。" + dataHint(conclusion)
+	case fpTrafficOriginByProvince:
+		return "统计口径为近七天卡口通行记录，按车牌归属省份和城市进行排名汇总。" + dataHint(conclusion)
 	case fpPopWeekTrend, fpPopRegionRank:
-		return "统计口径为近七天人流记录，按日期或区域维度汇总。"
+		return "统计口径为近七天人流记录，按日期或区域维度汇总。" + dataHint(conclusion)
 	case fpPopHolidayCompare:
-		return "统计口径为当前可识别周期与上一可比周期的人流记录对比；如需严格法定节假日口径，应接入节假日日历数据。"
+		return "统计口径为当前可识别周期与上一可比周期的人流记录对比；如需严格法定节假日口径，应接入节假日日历数据。" + dataHint(conclusion)
 	case fpPopHourlyTrend:
-		return "统计口径为今日人流记录，按时段维度汇总。"
+		return "统计口径为今日人流记录，按时段维度汇总。" + dataHint(conclusion)
 	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist:
-		return "统计口径为当前网格案件数据，按案件数量、办结状态、区域或案件类型维度汇总。"
+		return "统计口径为当前网格案件数据，按案件数量、办结状态、区域或案件类型维度汇总。" + dataHint(conclusion)
 	default:
 		if hasChart {
-			return "本次结果基于当前可查询数据汇总，并提供图表辅助对比。"
+			return "本次结果基于当前可查询数据汇总，并提供图表辅助对比。" + dataHint(conclusion)
 		}
-		return "本次结果基于当前可查询数据汇总。"
+		return "本次结果基于当前可查询数据汇总。" + dataHint(conclusion)
 	}
 }
 
-func fastPathKeyPointText(fp *fastPath) string {
+// dataHint 从结论文本中提取关键数值作为洞察补充
+func dataHint(conclusion string) string {
+	if conclusion == "" {
+		return ""
+	}
+	// 截取结论前 80 字符作为数据参考提示
+	runes := []rune(conclusion)
+	if len(runes) > 80 {
+		runes = runes[:80]
+	}
+	return "数据摘要：" + string(runes) + "…"
+}
+
+func fastPathKeyPointText(fp *fastPath, conclusion string) string {
 	switch fp.topic {
 	case "traffic":
-		return "- 重点关注车流总量、进出方向、卡口排名和港澳车占比变化。"
+		base := "- 重点关注车流总量、进出方向、卡口排名和港澳车占比变化。"
+		return base + dataKeyPoint(conclusion)
 	case "population":
-		return "- 重点关注人流总量、进出变化、区域差异和周期波动。"
+		base := "- 重点关注人流总量、进出变化、区域差异和周期波动。"
+		return base + dataKeyPoint(conclusion)
 	case "grid":
-		return "- 重点关注案件规模、办结情况、区域分布和治理压力。"
+		base := "- 重点关注案件规模、办结情况、区域分布和治理压力。"
+		return base + dataKeyPoint(conclusion)
 	default:
-		return "- 当前结果反映了所选口径下的主要业务变化。"
+		return "- 当前结果反映了所选口径下的主要业务变化。" + dataKeyPoint(conclusion)
 	}
 }
 
-func fastPathImpactText(fp *fastPath) string {
+// dataKeyPoint 从结论中提取变化方向关键词补充关键点
+func dataKeyPoint(conclusion string) string {
+	if conclusion == "" {
+		return ""
+	}
+	if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
+		return "\n- 当前呈增长趋势，需关注增长驱动因素及资源承载能力。"
+	}
+	if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
+		return "\n- 当前呈下降趋势，需排查下降原因及是否属于正常波动。"
+	}
+	if strings.Contains(conclusion, "持平") {
+		return "\n- 当前整体平稳，无显著异常波动。"
+	}
+	return ""
+}
+
+func fastPathImpactText(fp *fastPath, conclusion string) string {
 	switch fp.topic {
 	case "traffic":
-		return "- 可为交通疏导、口岸保障、卡口运行和设备运维提供参考。"
+		base := "- 可为交通疏导、口岸保障、卡口运行和设备运维提供参考。"
+		return base + impactFromConclusion(conclusion)
 	case "population":
-		return "- 可为公共服务保障、人员流动研判和重点区域调度提供参考。"
+		base := "- 可为公共服务保障、人员流动研判和重点区域调度提供参考。"
+		return base + impactFromConclusion(conclusion)
 	case "grid":
-		return "- 可为基层治理、案件督办和资源配置提供参考。"
+		base := "- 可为基层治理、案件督办和资源配置提供参考。"
+		return base + impactFromConclusion(conclusion)
 	default:
-		return "- 可辅助业务管理人员快速掌握当前运行态势。"
+		return "- 可辅助业务管理人员快速掌握当前运行态势。" + impactFromConclusion(conclusion)
 	}
 }
 
-func fastPathSuggestionText(fp *fastPath) string {
+// impactFromConclusion 根据结论中的数据量级补充业务影响描述
+func impactFromConclusion(conclusion string) string {
+	if conclusion == "" {
+		return ""
+	}
+	// 检测是否包含大数值（万级以上）以提示资源影响
+	if strings.Contains(conclusion, "万") {
+		return "\n- 数据量级较大，建议重点关注高峰时段的保障能力。"
+	}
+	return ""
+}
+
+func fastPathSuggestionText(fp *fastPath, conclusion string) string {
 	switch fp.topic {
 	case "traffic":
-		return "- 建议持续关注高峰卡口和异常波动点位，必要时加强现场疏导和设备巡检。"
+		base := "- 建议持续关注高峰卡口和异常波动点位，必要时加强现场疏导和设备巡检。"
+		return base + suggestionFromConclusion(conclusion)
 	case "population":
-		return "- 建议关注人流集中的区域和时段，提前做好服务保障和秩序维护。"
+		base := "- 建议关注人流集中的区域和时段，提前做好服务保障和秩序维护。"
+		return base + suggestionFromConclusion(conclusion)
 	case "grid":
-		return "- 建议对案件高发区域和未办结事项加强跟踪督办，复盘高发原因。"
+		base := "- 建议对案件高发区域和未办结事项加强跟踪督办，复盘高发原因。"
+		return base + suggestionFromConclusion(conclusion)
 	default:
-		return "- 建议结合后续数据变化持续跟踪，并对异常项开展复核。"
+		return "- 建议结合后续数据变化持续跟踪，并对异常项开展复核。" + suggestionFromConclusion(conclusion)
 	}
+}
+
+// suggestionFromConclusion 根据结论中的变化趋势补充具体建议
+func suggestionFromConclusion(conclusion string) string {
+	if conclusion == "" {
+		return ""
+	}
+	if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
+		return "\n- 增长趋势明显时，建议提前部署应急疏导和运力调配预案。"
+	}
+	if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
+		return "\n- 下降趋势下建议核查数据接入完整性，排除采集异常后再做研判。"
+	}
+	return ""
 }
 
 // ---- Traffic fast paths ----

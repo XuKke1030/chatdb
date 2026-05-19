@@ -81,14 +81,15 @@ func (s *sTraffic) RecognizePlate(ctx context.Context, plate string) model.Traff
 func recognizePlate(plate string) model.TrafficPlateRecognition {
 	normalized := normalizePlate(plate)
 	result := model.TrafficPlateRecognition{
-		Plate:           plate,
-		Normalized:      normalized,
-		Origin:          "未知",
+		Plate:            plate,
+		Normalized:       normalized,
+		Origin:           "未知",
 		RegionType:      "unknown",
-		IsHongKongMacau: false,
+		IsHongKongMacau:  false,
+		IsProvinceInside: false,
 		PlateType:       "unknown",
 		Confidence:      "low",
-		Basis:           "未匹配到已支持的内地、粤Z跨境、香港或澳门车牌格式",
+		Basis:           "未匹配到已支持的内地、粤Z跨境、香港、澳门、军车或使领馆车牌格式",
 	}
 	if normalized == "" {
 		result.Basis = "车牌为空"
@@ -96,6 +97,38 @@ func recognizePlate(plate string) model.TrafficPlateRecognition {
 	}
 
 	runes := []rune(normalized)
+
+	// Rule 1: WJ military plates (WJ粤12345 / WJ粤12345警)
+	if len(runes) >= 4 && runes[0] == 'W' && runes[1] == 'J' {
+		result.Origin = "中国内地"
+		result.RegionType = "mainland"
+		result.PlateType = "military_wj"
+		result.Confidence = "medium"
+		result.Basis = "匹配武警部队号牌：以WJ开头"
+		if len(runes) >= 3 {
+			if province, ok := mainlandProvinceMap[runes[2]]; ok {
+				result.Province = province
+			}
+		}
+		result.IsProvinceInside = len(runes) >= 3 && runes[2] == '粤'
+		return result
+	}
+
+	// Rule 2: Diplomatic plates (使A12345 / 领A12345)
+	if len(runes) >= 2 && (runes[0] == '使' || runes[0] == '领') {
+		result.Origin = "中国内地"
+		result.RegionType = "mainland"
+		result.PlateType = "diplomatic"
+		result.Confidence = "medium"
+		if runes[0] == '使' {
+			result.Basis = "匹配使馆号牌：以'使'开头"
+		} else {
+			result.Basis = "匹配领馆号牌：以'领'开头"
+		}
+		return result
+	}
+
+	// Rule 3: 粤Z cross-border plates
 	if len(runes) >= 4 && runes[0] == '粤' && unicode.ToUpper(runes[1]) == 'Z' {
 		suffix := runes[len(runes)-1]
 		if suffix == '港' || suffix == '澳' {
@@ -117,6 +150,7 @@ func recognizePlate(plate string) model.TrafficPlateRecognition {
 		}
 	}
 
+	// Rule 4: Mainland plates (7-char standard or 8-char new-energy)
 	if len(runes) >= 2 {
 		if province, ok := mainlandProvinceMap[runes[0]]; ok {
 			letter := unicode.ToUpper(runes[1])
@@ -127,18 +161,28 @@ func recognizePlate(plate string) model.TrafficPlateRecognition {
 				result.Province = province
 				result.Confidence = "medium"
 				result.Basis = "匹配内地机动车号牌省份简称和发牌机关字母"
+				// New energy: 8-char, 3rd rune is D or F
+				if len(runes) == 8 && (unicode.ToUpper(runes[2]) == 'D' || unicode.ToUpper(runes[2]) == 'F') {
+					result.PlateType = "mainland_new_energy"
+					result.Confidence = "high"
+					result.Basis = "匹配内地新能源号牌：8位，第3位为D/F"
+				}
 				if runes[0] == '粤' {
 					if city, cityOK := guangdongCityMap[letter]; cityOK {
 						result.City = city
-						result.Confidence = "high"
+						if result.Confidence != "high" {
+							result.Confidence = "high"
+						}
 						result.Basis = "匹配广东省车牌字母映射，" + string(runes[0]) + string(letter) + " 表示" + city
 					}
 				}
+				result.IsProvinceInside = runes[0] == '粤'
 				return result
 			}
 		}
 	}
 
+	// Rule 5: Macau local (ASCII only, M + letter + digits)
 	asciiPlate := normalizeAsciiPlate(normalized)
 	switch {
 	case macauLocalPlatePattern.MatchString(asciiPlate):

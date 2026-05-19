@@ -9,6 +9,7 @@ import (
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQuery) (*model.TrafficAggregateResult, error) {
@@ -32,7 +33,7 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 	seriesModel := applyTrafficRecordFilters(db.Model("traffic_gate_record").Ctx(ctx), query.DateFrom, query.DateTo, query.DeviceId, query.Plate, "")
 	seriesModel = applyTrafficExtraFilters(seriesModel, query.GateName, query.PlateRegion)
 	seriesRecords, err := seriesModel.
-		Fields(fmt.Sprintf("%s AS name, %s", groupExpr, trafficCountFields())).
+		Fields(fmt.Sprintf("%s AS name, %s, SUM(CASE WHEN LEFT(plate_normalized,1)='粤' AND is_hk_macau=0 THEN 1 ELSE 0 END) AS province_inside_count, SUM(CASE WHEN is_hk_macau=0 AND (LEFT(plate_normalized,1)<>'粤') THEN 1 ELSE 0 END) AS province_outside_count", groupExpr, trafficCountFields())).
 		Group("name").
 		Order(trafficGroupOrder(groupBy)).
 		Limit(200).
@@ -43,11 +44,13 @@ func (s *sTraffic) Aggregate(ctx context.Context, query model.TrafficAggregateQu
 	series := make([]model.TrafficAggregateSeriesItem, 0, len(seriesRecords))
 	for _, record := range seriesRecords {
 		series = append(series, model.TrafficAggregateSeriesItem{
-			Name:         record["name"].String(),
-			Total:        record["total"].Int(),
-			InCount:      record["in_count"].Int(),
-			OutCount:     record["out_count"].Int(),
-			HkMacauCount: record["hk_macau_count"].Int(),
+			Name:                record["name"].String(),
+			Total:               record["total"].Int(),
+			InCount:             record["in_count"].Int(),
+			OutCount:            record["out_count"].Int(),
+			HkMacauCount:        record["hk_macau_count"].Int(),
+			ProvinceInsideCount:  record["province_inside_count"].Int(),
+			ProvinceOutsideCount: record["province_outside_count"].Int(),
 		})
 	}
 	return &model.TrafficAggregateResult{
@@ -90,7 +93,9 @@ SUM(in_count) AS in_count,
 SUM(out_count) AS out_count,
 SUM(hk_macau_count) AS hk_macau_count,
 SUM(mainland_count) AS mainland_count,
-SUM(total - in_count - out_count) AS unknown_dir_count`).One()
+SUM(total - in_count - out_count) AS unknown_dir_count,
+SUM(province_inside_count) AS province_inside_count,
+SUM(province_outside_count) AS province_outside_count`).One()
 	if err != nil {
 		return nil, false, err
 	}
@@ -100,7 +105,7 @@ SUM(total - in_count - out_count) AS unknown_dir_count`).One()
 	}
 
 	records, err := applyTrafficMetricFilters(db.Model(table).Ctx(ctx), timeColumn, query).
-		Fields(fmt.Sprintf("%s AS name, SUM(total) AS total, SUM(in_count) AS in_count, SUM(out_count) AS out_count, SUM(hk_macau_count) AS hk_macau_count", nameExpr)).
+		Fields(fmt.Sprintf("%s AS name, SUM(total) AS total, SUM(in_count) AS in_count, SUM(out_count) AS out_count, SUM(hk_macau_count) AS hk_macau_count, SUM(province_inside_count) AS province_inside_count, SUM(province_outside_count) AS province_outside_count", nameExpr)).
 		Group("name").
 		Order(orderBy).
 		Limit(200).
@@ -111,14 +116,205 @@ SUM(total - in_count - out_count) AS unknown_dir_count`).One()
 	series := make([]model.TrafficAggregateSeriesItem, 0, len(records))
 	for _, record := range records {
 		series = append(series, model.TrafficAggregateSeriesItem{
-			Name:         record["name"].String(),
-			Total:        record["total"].Int(),
-			InCount:      record["in_count"].Int(),
-			OutCount:     record["out_count"].Int(),
-			HkMacauCount: record["hk_macau_count"].Int(),
+			Name:                record["name"].String(),
+			Total:               record["total"].Int(),
+			InCount:             record["in_count"].Int(),
+			OutCount:            record["out_count"].Int(),
+			HkMacauCount:        record["hk_macau_count"].Int(),
+			ProvinceInsideCount:  record["province_inside_count"].Int(),
+			ProvinceOutsideCount: record["province_outside_count"].Int(),
 		})
 	}
 	return &model.TrafficAggregateResult{Summary: summary, Series: series, GroupBy: groupBy}, true, nil
+}
+
+// StayDistribution returns stay time distribution buckets for a date range.
+func (s *sTraffic) StayDistribution(ctx context.Context, dateFrom, dateTo, region string) ([]model.TrafficStayBucketItem, error) {
+	db := g.DB("master")
+	m := db.Model("traffic_stay_distribution_daily").Ctx(ctx)
+	if dateFrom != "" {
+		m = m.Where("metric_date >= ?", normalizeQueryDateOnly(dateFrom))
+	}
+	if dateTo != "" {
+		m = m.Where("metric_date <= ?", normalizeQueryDateOnly(dateTo))
+	}
+	if region != "" {
+		m = m.Where("region LIKE ?", "%"+strings.TrimSpace(region)+"%")
+	}
+	records, err := m.Fields("bucket, SUM(vehicle_count) AS vehicle_count, AVG(avg_stay_minutes) AS avg_stay_minutes").
+		Group("bucket").
+		Order("bucket ASC").
+		All()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]model.TrafficStayBucketItem, 0, len(records))
+	for _, r := range records {
+		items = append(items, model.TrafficStayBucketItem{
+			Bucket:        r["bucket"].String(),
+			VehicleCount:  r["vehicle_count"].Int(),
+			AvgStayMinutes: r["avg_stay_minutes"].Float64(),
+		})
+	}
+	return items, nil
+}
+
+// OriginRank returns vehicle origin ranking by province/city for a date range.
+func (s *sTraffic) OriginRank(ctx context.Context, dateFrom, dateTo string, topN int) ([]model.TrafficOriginRankItem, error) {
+	if topN <= 0 {
+		topN = 10
+	}
+	db := g.DB("master")
+	m := db.Model("traffic_origin_daily").Ctx(ctx)
+	if dateFrom != "" {
+		m = m.Where("metric_date >= ?", normalizeQueryDateOnly(dateFrom))
+	}
+	if dateTo != "" {
+		m = m.Where("metric_date <= ?", normalizeQueryDateOnly(dateTo))
+	}
+	records, err := m.Fields("province, city, SUM(vehicle_count) AS vehicle_count, MAX(is_hk_macau) AS is_hk_macau").
+		Group("province, city").
+		OrderDesc("vehicle_count").
+		Limit(topN).
+		All()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]model.TrafficOriginRankItem, 0, len(records))
+	for _, r := range records {
+		items = append(items, model.TrafficOriginRankItem{
+			Province:     r["province"].String(),
+			City:         r["city"].String(),
+			VehicleCount: r["vehicle_count"].Int(),
+			IsHkMacau:    r["is_hk_macau"].Int() == 1,
+		})
+	}
+	return items, nil
+}
+
+// YoYCompare returns year-over-year comparison for a date range and groupBy.
+func (s *sTraffic) YoYCompare(ctx context.Context, dateFrom, dateTo, groupBy string) ([]model.TrafficYoYCompareItem, error) {
+	groupBy = normalizeTrafficGroupBy(groupBy)
+	now := gtime.Now()
+	if dateFrom == "" {
+		dateFrom = now.AddDate(0, 0, -6).Format("Y-m-d")
+	}
+	if dateTo == "" {
+		dateTo = now.Format("Y-m-d") + " 23:59:59"
+	}
+	// Compute same period last year
+	parsedFrom, _ := gtime.StrToTime(dateFrom)
+	parsedTo, _ := gtime.StrToTime(dateTo)
+	priorFrom := parsedFrom.AddDate(-1, 0, 0).Format("Y-m-d")
+	priorTo := parsedTo.AddDate(-1, 0, 0).Format("Y-m-d 15:04:05")
+
+	db := g.DB("master")
+	// Current period
+	curRecords, err := s.aggregateGrouped(ctx, db, dateFrom, dateTo, groupBy)
+	if err != nil {
+		return nil, err
+	}
+	// Prior period
+	priorRecords, err := s.aggregateGrouped(ctx, db, priorFrom, priorTo, groupBy)
+	if err != nil {
+		return nil, err
+	}
+	priorMap := make(map[string]int, len(priorRecords))
+	for _, r := range priorRecords {
+		priorMap[r.Name] = r.Total
+	}
+	items := make([]model.TrafficYoYCompareItem, 0, len(curRecords))
+	for _, r := range curRecords {
+		priorVal := priorMap[r.Name]
+		changePct := 0.0
+		if priorVal > 0 {
+			changePct = float64(r.Total-priorVal) / float64(priorVal) * 100
+		}
+		items = append(items, model.TrafficYoYCompareItem{
+			Name:       r.Name,
+			CurrentVal: r.Total,
+			PriorVal:   priorVal,
+			ChangePct:  changePct,
+		})
+	}
+	return items, nil
+}
+
+// MoMCompare returns month-over-month comparison.
+func (s *sTraffic) MoMCompare(ctx context.Context, dateFrom, dateTo, groupBy string) ([]model.TrafficYoYCompareItem, error) {
+	groupBy = normalizeTrafficGroupBy(groupBy)
+	now := gtime.Now()
+	if dateFrom == "" {
+		dateFrom = now.AddDate(0, -1, 0).Format("Y-m-d")
+	}
+	if dateTo == "" {
+		dateTo = now.Format("Y-m-d") + " 23:59:59"
+	}
+	parsedFrom, _ := gtime.StrToTime(dateFrom)
+	parsedTo, _ := gtime.StrToTime(dateTo)
+	priorFrom := parsedFrom.AddDate(0, -1, 0).Format("Y-m-d")
+	priorTo := parsedTo.AddDate(0, -1, 0).Format("Y-m-d 15:04:05")
+
+	db := g.DB("master")
+	curRecords, err := s.aggregateGrouped(ctx, db, dateFrom, dateTo, groupBy)
+	if err != nil {
+		return nil, err
+	}
+	priorRecords, err := s.aggregateGrouped(ctx, db, priorFrom, priorTo, groupBy)
+	if err != nil {
+		return nil, err
+	}
+	priorMap := make(map[string]int, len(priorRecords))
+	for _, r := range priorRecords {
+		priorMap[r.Name] = r.Total
+	}
+	items := make([]model.TrafficYoYCompareItem, 0, len(curRecords))
+	for _, r := range curRecords {
+		priorVal := priorMap[r.Name]
+		changePct := 0.0
+		if priorVal > 0 {
+			changePct = float64(r.Total-priorVal) / float64(priorVal) * 100
+		}
+		items = append(items, model.TrafficYoYCompareItem{
+			Name:       r.Name,
+			CurrentVal: r.Total,
+			PriorVal:   priorVal,
+			ChangePct:  changePct,
+		})
+	}
+	return items, nil
+}
+
+// HolidayTraffic returns aggregate traffic for a given holiday period.
+func (s *sTraffic) HolidayTraffic(ctx context.Context, holidayName string) (*model.TrafficAggregateResult, error) {
+	db := g.DB("master")
+	// Find the holiday date range
+	records, err := db.Model("traffic_holiday").Ctx(ctx).
+		Where("holiday_name LIKE ? AND holiday_type = 'holiday'", "%"+strings.TrimSpace(holidayName)+"%").
+		OrderAsc("holiday_date").All()
+	if err != nil || len(records) == 0 {
+		return nil, fmt.Errorf("未找到节假日「%s」的配置", holidayName)
+	}
+	dateFrom := records[0]["holiday_date"].String()
+	dateTo := records[len(records)-1]["holiday_date"].String()
+	return s.Aggregate(ctx, model.TrafficAggregateQuery{
+		DateFrom: dateFrom,
+		DateTo:   dateTo + " 23:59:59",
+		GroupBy:  "day",
+	})
+}
+
+// aggregateGrouped is a helper for YoY/MoM that returns grouped totals.
+func (s *sTraffic) aggregateGrouped(ctx context.Context, db gdb.DB, dateFrom, dateTo, groupBy string) ([]model.TrafficAggregateSeriesItem, error) {
+	result, err := s.Aggregate(ctx, model.TrafficAggregateQuery{
+		DateFrom: dateFrom,
+		DateTo:   dateTo,
+		GroupBy:  groupBy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Series, nil
 }
 
 func applyTrafficMetricFilters(m *gdb.Model, timeColumn string, query model.TrafficAggregateQuery) *gdb.Model {
@@ -148,7 +344,6 @@ func applyTrafficMetricFilters(m *gdb.Model, timeColumn string, query model.Traf
 	return m
 }
 
-// applyTrafficExtraFilters 应用卡口名称和区域名称过滤
 func applyTrafficExtraFilters(m *gdb.Model, gateName string, plateRegion string) *gdb.Model {
 	if gateName := strings.TrimSpace(gateName); gateName != "" {
 		m = m.Where("device_name LIKE ?", "%"+gateName+"%")
@@ -302,18 +497,28 @@ func aggregateSummaryFromRecord(record gdb.Record) model.TrafficAggregateSummary
 	}
 	total := record["total"].Int()
 	hkMacau := record["hk_macau_count"].Int()
-	ratio := 0.0
+	hkRatio := 0.0
 	if total > 0 {
-		ratio = float64(hkMacau) / float64(total)
+		hkRatio = float64(hkMacau) / float64(total)
+	}
+	insideCount := record["province_inside_count"].Int()
+	outsideCount := record["province_outside_count"].Int()
+	insideRatio := 0.0
+	mainland := total - hkMacau
+	if mainland > 0 {
+		insideRatio = float64(insideCount) / float64(mainland)
 	}
 	return model.TrafficAggregateSummary{
-		Total:           total,
-		InCount:         record["in_count"].Int(),
-		OutCount:        record["out_count"].Int(),
-		HkMacauCount:    hkMacau,
-		HkMacauRatio:    ratio,
-		MainlandCount:   total - hkMacau,
-		UnknownDirCount: record["unknown_dir_count"].Int(),
+		Total:               total,
+		InCount:             record["in_count"].Int(),
+		OutCount:            record["out_count"].Int(),
+		HkMacauCount:        hkMacau,
+		HkMacauRatio:        hkRatio,
+		MainlandCount:       mainland,
+		UnknownDirCount:     record["unknown_dir_count"].Int(),
+		ProvinceInsideCount:  insideCount,
+		ProvinceOutsideCount: outsideCount,
+		ProvinceInsideRatio:  insideRatio,
 	}
 }
 
