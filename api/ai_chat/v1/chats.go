@@ -39,6 +39,22 @@ type ChatSessionCreateRes struct {
 	InputPlaceholder   string   `json:"inputPlaceholder"`
 }
 
+type ExampleQuestionsReq struct {
+	g.Meta `path:"/chats/example-questions" method:"get" tags:"V1/聊天" sm:"获取示例问题" dc:"按主题获取用户可用的示例问题列表"`
+	Topic  string `json:"topic" p:"topic" dc:"主题筛选：grid|population|traffic，为空则返回全部"`
+}
+
+type ExampleQuestionsRes struct {
+	Items []ExampleQuestionItem `json:"items"`
+}
+
+type ExampleQuestionItem struct {
+	Id          int    `json:"id"`
+	Topic       string `json:"topic"`
+	Question    string `json:"question"`
+	Description string `json:"description,omitempty"`
+}
+
 type GridMajorCaseAnalysisReq struct {
 	g.Meta `path:"/grid/major-case-analysis" method:"get" tags:"V1/问数" sm:"重大案件分析" dc:"按影响度/难度对网格案件排序，返回Top1案件信息及评分依据"`
 	Metric string `json:"metric" in:"query" dc:"排序口径：combined|impact|difficulty，默认combined"`

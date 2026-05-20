@@ -7,10 +7,13 @@ import (
 	"ai-chat-sql/internal/controller/qa"
 	"ai-chat-sql/internal/controller/traffic"
 	"ai-chat-sql/internal/controller/user"
+	"ai-chat-sql/internal/logic/precipitate"
+	"ai-chat-sql/internal/logic/sync"
 	"ai-chat-sql/internal/logic/uiap"
 	"ai-chat-sql/internal/packed"
 	"ai-chat-sql/internal/service"
 	"context"
+	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -31,6 +34,8 @@ var (
 			}
 			service.Traffic().StartMqttSubscriber(ctx)
 			uiap.StartPermissionPoller(ctx)
+	sync.StartScheduler(ctx)
+			go precipitate.StartCandidateScanner(ctx, 10*time.Minute, 3)
 			s := g.Server()
 			s.Group("/api/v1", func(group *ghttp.RouterGroup) {
 				group.Middleware(service.Middleware().RequestMetrics, service.Middleware().HandlerResponse, ghttp.MiddlewareCORS)
@@ -38,7 +43,13 @@ var (
 				{
 					authGroup := group.Clone()
 					authGroup.Middleware(service.Middleware().JwtAuth(consts.JwtSubjectUser)).
-						Bind(ai_chat.NewV1(), user.NewV1(), admin.NewV1(), qa.NewV1(), traffic.NewV1())
+						Bind(ai_chat.NewV1(), user.NewV1(), qa.NewV1(), traffic.NewV1())
+				}
+				// Admin routes: AdminJwtAuth skips /admin/login automatically
+				{
+					adminGroup := group.Clone()
+					adminGroup.Middleware(service.Middleware().AdminJwtAuth).
+						Bind(admin.NewV1())
 				}
 			})
 			s.Run()

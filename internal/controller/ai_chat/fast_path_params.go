@@ -128,11 +128,11 @@ func compareRefParams(q string) string {
 	if containsAny(q, []string{"同比", "去年同期", "去年", "比去年同期"}) {
 		return "yoy"
 	}
+	if containsAny(q, []string{"上周", "上一周", "上周同期", "对比上周"}) {
+		return "lastweek"
+	}
 	if containsAny(q, []string{"环比", "上月", "比上月", "比上月同期"}) {
 		return "mom"
-	}
-	if containsAny(q, []string{"上周", "上一周", "环比", "上周同期", "对比上周"}) {
-		return "lastweek"
 	}
 	return ""
 }

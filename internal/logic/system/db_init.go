@@ -41,6 +41,9 @@ func (s *sSystemInit) InitDB(ctx context.Context) error {
 	if err := service.Traffic().InitTables(ctx); err != nil {
 		return fmt.Errorf("traffic table init failed: %w", err)
 	}
+	if err := service.Population().InitTables(ctx); err != nil {
+		return fmt.Errorf("population table init failed: %w", err)
+	}
 	if err := aidgp.CreateTables(ctx); err != nil {
 		return fmt.Errorf("aidgp table init failed: %w", err)
 	}
@@ -56,6 +59,10 @@ func (s *sSystemInit) InitDB(ctx context.Context) error {
 	}
 	if err := alert.SeedAlertTables(ctx, db); err != nil {
 		return fmt.Errorf("alert seed init failed: %w", err)
+	}
+
+	if err := service.Metric().Bootstrap(ctx); err != nil {
+		return fmt.Errorf("metric bootstrap failed: %w", err)
 	}
 
 	return nil

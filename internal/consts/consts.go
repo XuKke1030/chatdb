@@ -27,6 +27,7 @@ var (
 )
 
 const JwtSubjectUser = "ai-chat-user"
+const JwtSubjectAdmin = "ai-chat-admin"
 
 func init() {
 	if err := initSystemConfig(); err != nil {
@@ -98,6 +99,10 @@ func applyEnvOverrides() {
 	}
 	if Config.Redis == nil {
 		Config.Redis = &model.RedisConfig{}
+	}
+
+	if Config.Sync == nil {
+		Config.Sync = &model.SyncConfig{}
 	}
 
 	setStringFromEnv(&Config.Server.Address, "CHATDB_SERVER_ADDRESS")
@@ -222,6 +227,12 @@ func applyEnvOverrides() {
 		}
 	}
 
+	if seconds := os.Getenv("CHATDB_SYNC_INTERVAL_SECONDS"); seconds != "" {
+		if v, err := strconv.Atoi(seconds); err == nil && v > 0 {
+			Config.Sync.IntervalSeconds = v
+		}
+	}
+
 	jwtSecret := os.Getenv("CHATDB_JWT_SECRET")
 	jwtExpire := os.Getenv("CHATDB_JWT_EXPIRE_HOURS")
 	jwtIssuer := os.Getenv("CHATDB_JWT_ISSUER")
@@ -247,16 +258,32 @@ func applyEnvOverrides() {
 }
 
 func ensureJwtOption() {
+	hasUser, hasAdmin := false, false
 	for _, option := range Config.Jwt {
-		if option != nil && option.Subject == JwtSubjectUser {
-			return
+		if option == nil {
+			continue
+		}
+		if option.Subject == JwtSubjectUser {
+			hasUser = true
+		}
+		if option.Subject == JwtSubjectAdmin {
+			hasAdmin = true
 		}
 	}
-	Config.Jwt = append(Config.Jwt, &model.JwtOption{
-		Subject: JwtSubjectUser,
-		Expire:  24,
-		Issuer:  "chatdb",
-	})
+	if !hasUser {
+		Config.Jwt = append(Config.Jwt, &model.JwtOption{
+			Subject: JwtSubjectUser,
+			Expire:  24,
+			Issuer:  "chatdb",
+		})
+	}
+	if !hasAdmin {
+		Config.Jwt = append(Config.Jwt, &model.JwtOption{
+			Subject: JwtSubjectAdmin,
+			Expire:  8,
+			Issuer:  "chatdb",
+		})
+	}
 }
 
 func setStringFromEnv(target *string, key string) {

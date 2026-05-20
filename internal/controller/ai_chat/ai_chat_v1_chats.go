@@ -11,6 +11,7 @@ import (
 
 	v1 "ai-chat-sql/api/ai_chat/v1"
 	"ai-chat-sql/internal/consts"
+	"ai-chat-sql/internal/logic/precipitate"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 
@@ -106,6 +107,13 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 		return nil, err
 	}
 	logStage("save_user_message")
+
+	// Record question for auto-precipitation (fire-and-forget)
+	g.Go(ctx, func(ctx context.Context) {
+		_ = upsertAskNumberQuestionStat(ctx, userId, req.Topic, req.Message)
+	}, func(ctx context.Context, exception error) {
+		consts.Logger.Errorf(ctx, "upsertAskNumberQuestionStat error: %v", exception)
+	})
 
 	// Fast path: bypass AI SQL generation for high-frequency questions.
 	if intent, ok := NewFastPathRouter().Match(req); ok {
@@ -238,6 +246,27 @@ func (c *ControllerV1) ChatSessionReset(ctx context.Context, req *v1.ChatSession
 		return nil, err
 	}
 	return &v1.ChatSessionResetRes{SessionId: req.SessionId}, nil
+}
+
+func (c *ControllerV1) ExampleQuestions(ctx context.Context, req *v1.ExampleQuestionsReq) (res *v1.ExampleQuestionsRes, err error) {
+	query := g.DB("master").Model("admin_example_question").Ctx(ctx).Where("enabled", 1)
+	if req.Topic != "" {
+		query = query.Where("topic", req.Topic)
+	}
+	records, err := query.OrderAsc("sort").OrderDesc("update_time").All()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]v1.ExampleQuestionItem, 0, len(records))
+	for _, r := range records {
+		items = append(items, v1.ExampleQuestionItem{
+			Id:          r["id"].Int(),
+			Topic:       r["topic"].String(),
+			Question:    r["question"].String(),
+			Description: r["description"].String(),
+		})
+	}
+	return &v1.ExampleQuestionsRes{Items: items}, nil
 }
 
 func (c *ControllerV1) GridMajorCaseAnalysis(ctx context.Context, req *v1.GridMajorCaseAnalysisReq) (res *v1.GridMajorCaseAnalysisRes, err error) {
@@ -441,10 +470,25 @@ create_time INT NOT NULL,
 INDEX idx_session_id (session_id),
 INDEX idx_user_session (user_id, session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+	questionStatSQL := `CREATE TABLE IF NOT EXISTS ask_number_question_stat (
+id BIGINT PRIMARY KEY AUTO_INCREMENT,
+user_id INT NOT NULL,
+topic VARCHAR(32) NOT NULL,
+question_normalized VARCHAR(255) NOT NULL,
+hit_count INT NOT NULL DEFAULT 1,
+last_asked_at INT NOT NULL,
+create_time INT NOT NULL,
+update_time INT NOT NULL,
+UNIQUE KEY uk_user_topic_question (user_id, topic, question_normalized),
+INDEX idx_hit_topic (hit_count DESC, topic)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
 	if _, err := db.Exec(ctx, sessionSQL); err != nil {
 		return err
 	}
 	if _, err := db.Exec(ctx, messageSQL); err != nil {
+		return err
+	}
+	if _, err := db.Exec(ctx, questionStatSQL); err != nil {
 		return err
 	}
 	return nil
@@ -456,6 +500,46 @@ func newAskNumberSessionId() string {
 		return fmt.Sprintf("ask_%d", gtime.TimestampNano())
 	}
 	return fmt.Sprintf("ask_%x", buf)
+}
+
+func normalizeAskNumberQuestion(q string) string {
+	return precipitate.NormalizeQuestion(q)
+}
+
+func upsertAskNumberQuestionStat(ctx context.Context, userId int, topic, question string) error {
+	normalized := normalizeAskNumberQuestion(question)
+	if normalized == "" {
+		return nil
+	}
+	db := g.DB("master")
+	record, err := db.Model("ask_number_question_stat").Ctx(ctx).
+		Fields("id, hit_count").
+		Where("user_id = ? AND topic = ? AND question_normalized = ?", userId, topic, normalized).
+		One()
+	if err != nil {
+		return err
+	}
+	now := int(gtime.Timestamp())
+	if record == nil {
+		_, err = db.Model("ask_number_question_stat").Ctx(ctx).Data(g.Map{
+			"user_id":             userId,
+			"topic":               topic,
+			"question_normalized": normalized,
+			"hit_count":           1,
+			"last_asked_at":       now,
+			"create_time":         now,
+			"update_time":         now,
+		}).Insert()
+		return err
+	}
+	_, err = db.Model("ask_number_question_stat").Ctx(ctx).
+		Where("id = ?", record["id"].Int64()).
+		Data(g.Map{
+			"hit_count":     record["hit_count"].Int() + 1,
+			"last_asked_at": now,
+			"update_time":   now,
+		}).Update()
+	return err
 }
 
 func isKnownAskNumberTopic(topic string) bool {
@@ -477,6 +561,21 @@ func topicSessionTitle(topic string) string {
 }
 
 func suggestedQuestionsForTopic(topic string) []string {
+	ctx := context.Background()
+	records, err := g.DB("master").Model("admin_example_question").Ctx(ctx).
+		Where("enabled", 1).Where("topic", topic).
+		OrderAsc("sort").OrderDesc("update_time").All()
+	if err == nil && len(records) > 0 {
+		qs := make([]string, 0, len(records))
+		for _, r := range records {
+			if q := r["question"].String(); q != "" {
+				qs = append(qs, q)
+			}
+		}
+		if len(qs) > 0 {
+			return qs
+		}
+	}
 	switch topic {
 	case "grid":
 		return []string{"这个月哪个社区案件最多？", "本月网格案件结案率是多少？", "分析一下当前最需要关注的重大案件"}
@@ -944,6 +1043,11 @@ const (
 	fpGridCaseTypeDist                          // 案件类型分布
 	fpTrafficOverview                          // 车流整体情况（复合）
 	fpPopOverview                              // 人流综合分析（复合）
+	fpPopYoY                                   // 人流同比
+	fpPopMultiRegionCompare                    // 多区域趋势对比
+	fpPopFloatingAnomaly                       // 流动人口异常识别
+	fpGridOverview                            // 网格综合分析（复合）
+	fpTrafficHkMacauStay                      // 港澳车停留时长分布
 )
 
 type fastPath struct {
@@ -1024,7 +1128,16 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"人流整体", "人流情况", "人流概况", "人流综合", "人流怎么样", "人流总览"}) {
 			return &fastPath{kind: fpPopOverview, topic: topic}
 		}
-	case "grid":
+		if containsAny(q, []string{"同比", "去年同期", "比去年", "去年"}) {
+			return &fastPath{kind: fpPopYoY, topic: topic}
+		}
+		if containsAny(q, []string{"各区域", "多区域", "区域对比", "区域比较", "几个区域"}) {
+			return &fastPath{kind: fpPopMultiRegionCompare, topic: topic}
+		}
+		if containsAny(q, []string{"流动人口", "异常增长", "异常变化", "流动人口异常"}) {
+			return &fastPath{kind: fpPopFloatingAnomaly, topic: topic}
+		}
+		case "grid":
 		if containsAny(q, []string{"案件数量", "有多少案件", "案件数", "案件总数"}) {
 			return &fastPath{kind: fpGridCaseCount, topic: topic}
 		}
@@ -1036,6 +1149,9 @@ func matchFastPath(topic, question string) *fastPath {
 		}
 		if containsAny(q, []string{"案件类型", "类型分布", "类型统计", "哪类案件", "案件分类"}) {
 			return &fastPath{kind: fpGridCaseTypeDist, topic: topic}
+			if containsAny(q, []string{"网格整体", "网格综合", "网格整体情况", "网格概览", "网格综合分析", "网格情况", "网格总览"}) {
+				return &fastPath{kind: fpGridOverview, topic: topic}
+			}
 		}
 	}
 	return nil
@@ -1080,13 +1196,21 @@ func executeFastPath(ctx context.Context, fp *fastPath) (answer string, chartDat
 		return fastPopQuery(ctx, fp.kind)
 	case fpPopOverview:
 		return fastPopOverview(ctx, p)
+	case fpPopYoY:
+		return fastPopYoYQuery(ctx)
+	case fpPopMultiRegionCompare:
+		return fastPopMultiRegionCompareQuery(ctx)
+	case fpPopFloatingAnomaly:
+		return fastPopFloatingAnomalyQuery(ctx)
 	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist:
 		return fastGridQueryStable(ctx, fp.kind)
+		case fpGridOverview:
+			return fastGridOverview(ctx, fp.params)
 	}
 	return "暂不支持该问题的快速查询。", "", nil
 }
 
-func formatFastPathAnswer(fp *fastPath, conclusion string, chartData string) string {
+func formatFastPathAnswer(ctx context.Context, fp *fastPath, conclusion string, chartData string) string {
 	conclusion = strings.TrimSpace(conclusion)
 	if conclusion == "" {
 		conclusion = "当前未查询到符合条件的数据。"
@@ -1096,7 +1220,7 @@ func formatFastPathAnswer(fp *fastPath, conclusion string, chartData string) str
 		conclusion,
 		"",
 		"## 特征洞察",
-		fastPathFeatureText(fp, conclusion, chartData != ""),
+		fastPathFeatureText(ctx, fp, conclusion, chartData != ""),
 		"",
 	}
 	if strings.TrimSpace(chartData) != "" {
@@ -1109,18 +1233,18 @@ func formatFastPathAnswer(fp *fastPath, conclusion string, chartData string) str
 	parts = append(parts,
 		"## 洞察分析",
 		"### 关键 / 异常点",
-		fastPathKeyPointText(fp, conclusion),
+		fastPathKeyPointText(ctx, fp, conclusion),
 		"",
 		"### 业务影响",
-		fastPathImpactText(fp, conclusion),
+		fastPathImpactText(ctx, fp, conclusion),
 		"",
 		"### 优化建议",
-		fastPathSuggestionText(fp, conclusion),
+		fastPathSuggestionText(ctx, fp, conclusion),
 	)
 	return strings.Join(parts, "\n")
 }
 
-func fastPathFeatureText(fp *fastPath, conclusion string, hasChart bool) string {
+func fastPathFeatureText(ctx context.Context, fp *fastPath, conclusion string, hasChart bool) string {
 	switch fp.kind {
 	case fpTrafficToday:
 		return "统计口径为当天卡口通行记录，按进入、离开、港澳车等业务维度汇总。" + dataHint(conclusion)
@@ -1156,7 +1280,7 @@ func fastPathFeatureText(fp *fastPath, conclusion string, hasChart bool) string 
 		return "统计口径为当前可识别周期与上一可比周期的人流记录对比；如需严格法定节假日口径，应接入节假日日历数据。" + dataHint(conclusion)
 	case fpPopHourlyTrend:
 		return "统计口径为今日人流记录，按时段维度汇总。" + dataHint(conclusion)
-	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist:
+	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist, fpGridOverview:
 		return "统计口径为当前网格案件数据，按案件数量、办结状态、区域或案件类型维度汇总。" + dataHint(conclusion)
 	default:
 		if hasChart {
@@ -1179,24 +1303,24 @@ func dataHint(conclusion string) string {
 	return "数据摘要：" + string(runes) + "…"
 }
 
-func fastPathKeyPointText(fp *fastPath, conclusion string) string {
-	keyPoints, _, _ := buildKindInsight(fp, conclusion)
+func fastPathKeyPointText(ctx context.Context, fp *fastPath, conclusion string) string {
+	keyPoints, _, _ := buildKindInsight(ctx, fp, conclusion)
 	if len(keyPoints) == 0 {
 		return ""
 	}
 	return "- " + strings.Join(keyPoints, "\n- ")
 }
 
-func fastPathImpactText(fp *fastPath, conclusion string) string {
-	_, impacts, _ := buildKindInsight(fp, conclusion)
+func fastPathImpactText(ctx context.Context, fp *fastPath, conclusion string) string {
+	_, impacts, _ := buildKindInsight(ctx, fp, conclusion)
 	if len(impacts) == 0 {
 		return ""
 	}
 	return "- " + strings.Join(impacts, "\n- ")
 }
 
-func fastPathSuggestionText(fp *fastPath, conclusion string) string {
-	_, _, suggestions := buildKindInsight(fp, conclusion)
+func fastPathSuggestionText(ctx context.Context, fp *fastPath, conclusion string) string {
+	_, _, suggestions := buildKindInsight(ctx, fp, conclusion)
 	if len(suggestions) == 0 {
 		return ""
 	}
@@ -1621,112 +1745,196 @@ func fastPopQuery(ctx context.Context, kind fastPathKind) (string, string, error
 }
 
 func fastPopWeekTrendQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	// Discover the population record table dynamically
-	tableName := discoverPopTable(ctx, db)
-	if tableName == "" {
-		return "当前未接入人流数据，无法直接查询，请联系管理员开通人流数据接入。", "", nil
-	}
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
 	from := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-	records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
-		SELECT DATE(snapshot_time) AS day,
-		       SUM(CASE WHEN direction = 'in' OR in_dir = 0 THEN 1 ELSE 0 END) AS in_count,
-		       SUM(CASE WHEN direction = 'out' OR in_dir = 1 THEN 1 ELSE 0 END) AS out_count,
-		       COUNT(*) AS total
-		FROM %s
-		WHERE snapshot_time >= ? AND snapshot_time <= ?
-		GROUP BY day ORDER BY day`, tableName), from, to).All()
-	if err != nil || len(records) == 0 {
+	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
+
+	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+		DateFrom: from,
+		DateTo:   to,
+		GroupBy:  "day",
+	})
+	if err != nil || result == nil || len(result.Series) == 0 {
 		return "近七天暂无人流数据。", "", nil
 	}
-	xLabels := make([]string, 0, len(records))
-	inData := make([]int, 0, len(records))
-	outData := make([]int, 0, len(records))
-	tableRows := make([][]any, 0, len(records))
-	var totalAll int
-	for _, r := range records {
-		day := r["day"].String()
-		ic := r["in_count"].Int()
-		oc := r["out_count"].Int()
-		t := r["total"].Int()
-		totalAll += t
-		xLabels = append(xLabels, day)
-		inData = append(inData, ic)
-		outData = append(outData, oc)
-		tableRows = append(tableRows, []any{day, ic, oc, t})
+
+	s := result.Summary
+	xLabels := make([]string, 0, len(result.Series))
+	inData := make([]int, 0, len(result.Series))
+	outData := make([]int, 0, len(result.Series))
+	tableRows := make([][]any, 0, len(result.Series))
+	for _, item := range result.Series {
+		xLabels = append(xLabels, item.Name)
+		inData = append(inData, item.InCount)
+		outData = append(outData, item.OutCount)
+		tableRows = append(tableRows, []any{item.Name, item.InCount, item.OutCount, item.InCount + item.OutCount})
 	}
 	chart := buildChart("line", "近七天人流进出趋势", xLabels,
 		[]chartSeries{{Name: "进入人数", Data: inData}, {Name: "离开人数", Data: outData}},
 		[]string{"日期", "进入", "离开", "合计"}, tableRows)
-	answer := fmt.Sprintf("近七天人流总计 %d 人次，日均 %.0f 人次。", totalAll, float64(totalAll)/float64(len(records)))
+	answer := fmt.Sprintf("近七天人流总计 %d 人次，日均 %.0f 人次。", s.TotalInCount+s.TotalOutCount, float64(s.TotalInCount+s.TotalOutCount)/float64(len(result.Series)))
 	return answer, chart, nil
 }
 
 func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	tableName := discoverPopTable(ctx, db)
-	if tableName == "" {
-		return "当前未接入人流数据，无法直接查询节假日对比。", "", nil
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Now().In(loc)
+	hp, found := latestChinaHolidayPeriod(now)
+	if !found {
+		thisFrom := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
+		thisTo := gtime.Now().Format("Y-m-d") + " 23:59:59"
+		thisResult, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+			DateFrom: thisFrom,
+			DateTo:   thisTo,
+			GroupBy:  "day",
+		})
+		if err != nil || thisResult == nil {
+			return "本周暂无人流数据。", "", nil
+		}
+		thisTotal := thisResult.Summary.TotalInCount + thisResult.Summary.TotalOutCount
+
+		lastFrom := gtime.Now().AddDate(0, 0, -13).Format("Y-m-d")
+		lastTo := gtime.Now().AddDate(0, 0, -7).Format("Y-m-d") + " 23:59:59"
+		lastResult, _ := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+			DateFrom: lastFrom,
+			DateTo:   lastTo,
+			GroupBy:  "day",
+		})
+		var lastTotal int
+		if lastResult != nil {
+			lastTotal = lastResult.Summary.TotalInCount + lastResult.Summary.TotalOutCount
+		}
+		pct := 0.0
+		if lastTotal > 0 {
+			pct = float64(thisTotal-lastTotal) / float64(lastTotal) * 100
+		}
+		direction := "增长"
+		if pct < 0 {
+			direction = "下降"
+			pct = -pct
+		}
+		answer := fmt.Sprintf("本周人流 %d 人次，上周 %d 人次，环比%s %.1f%%。", thisTotal, lastTotal, direction, pct)
+		return answer, "", nil
 	}
-	// Use current week vs last week as a simple comparison
-	thisFrom := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-	thisTo := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	lastFrom := gtime.Now().AddDate(0, 0, -13).Format("Y-m-d")
-	lastTo := gtime.Now().AddDate(0, 0, -7).Format("Y-m-d") + " 23:59:59"
-	thisCount, err := db.Ctx(ctx).Raw(fmt.Sprintf(
-		"SELECT COUNT(*) AS c FROM %s WHERE snapshot_time >= ? AND snapshot_time <= ?", tableName), thisFrom, thisTo).Value()
-	if err != nil {
-		return "", "", err
+
+	holidayFrom := hp.Start.Format("2006-01-02")
+	holidayTo := hp.End.Format("2006-01-02") + " 23:59:59"
+	hResult, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+		DateFrom: holidayFrom,
+		DateTo:   holidayTo,
+		GroupBy:  "day",
+	})
+	if err != nil || hResult == nil {
+		return fmt.Sprintf("%s期间暂无人流数据。", hp.Name), "", nil
 	}
-	lastCount, err := db.Ctx(ctx).Raw(fmt.Sprintf(
-		"SELECT COUNT(*) AS c FROM %s WHERE snapshot_time >= ? AND snapshot_time <= ?", tableName), lastFrom, lastTo).Value()
-	if err != nil {
-		return "", "", err
+	hTotal := hResult.Summary.TotalInCount + hResult.Summary.TotalOutCount
+	holidayDays := int(hp.End.Sub(hp.Start)/(24*time.Hour)) + 1
+
+	baseFrom := hp.Start.AddDate(0, 0, -7).Format("2006-01-02")
+	baseTo := hp.Start.AddDate(0, 0, -1).Format("2006-01-02") + " 23:59:59"
+	bResult, _ := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+		DateFrom: baseFrom,
+		DateTo:   baseTo,
+		GroupBy:  "day",
+	})
+	var bTotal int
+	if bResult != nil {
+		bTotal = bResult.Summary.TotalInCount + bResult.Summary.TotalOutCount
 	}
-	tc := thisCount.Int()
-	lc := lastCount.Int()
+	hDaily := float64(hTotal) / float64(holidayDays)
+	bDaily := float64(bTotal) / 7.0
 	pct := 0.0
-	if lc > 0 {
-		pct = float64(tc-lc) / float64(lc) * 100
+	if bDaily > 0 {
+		pct = (hDaily - bDaily) / bDaily * 100
 	}
 	direction := "增长"
 	if pct < 0 {
 		direction = "下降"
 		pct = -pct
 	}
-	answer := fmt.Sprintf("本周人流 %d 人次，上周 %d 人次，环比%s %.1f%%。", tc, lc, direction, pct)
+	answer := fmt.Sprintf("%s期间（%s至%s）日均人流 %.0f 人次，节前7天日均 %.0f 人次，日均%s %.1f%%。", hp.Name, holidayFrom, hp.End.Format("2006-01-02"), hDaily, bDaily, direction, pct)
 	return answer, "", nil
 }
 
 func fastPopRegionRankQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	tableName := discoverPopTable(ctx, db)
-	if tableName == "" {
-		return "当前未接入人流数据，无法查询区域排名。", "", nil
-	}
-	records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
-		SELECT COALESCE(region, '未知') AS name, COUNT(*) AS total
-		FROM %s
-		WHERE snapshot_time >= ? AND snapshot_time <= ?
-		GROUP BY name ORDER BY total DESC LIMIT 10`,
-		tableName),
-		gtime.Now().AddDate(0, 0, -6).Format("Y-m-d"),
-		gtime.Now().Format("Y-m-d")+" 23:59:59").All()
-	if err != nil || len(records) == 0 {
+	from := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
+	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
+
+	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+		DateFrom: from,
+		DateTo:   to,
+		GroupBy:  "region",
+	})
+	if err != nil || result == nil || len(result.Series) == 0 {
 		return "近七天暂无区域人流数据。", "", nil
 	}
-	xLabels := make([]string, 0, len(records))
-	totalData := make([]int, 0, len(records))
-	tableRows := make([][]any, 0, len(records))
-	for i, r := range records {
-		xLabels = append(xLabels, r["name"].String())
-		totalData = append(totalData, r["total"].Int())
-		tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), r["name"].String(), r["total"].Int()})
+
+	sort.Slice(result.Series, func(i, j int) bool {
+		return (result.Series[i].InCount+result.Series[i].OutCount) > (result.Series[j].InCount+result.Series[j].OutCount)
+	})
+	if len(result.Series) > 10 {
+		result.Series = result.Series[:10]
+	}
+
+	xLabels := make([]string, 0, len(result.Series))
+	totalData := make([]int, 0, len(result.Series))
+	tableRows := make([][]any, 0, len(result.Series))
+	for i, item := range result.Series {
+		total := item.InCount + item.OutCount
+		xLabels = append(xLabels, item.Name)
+		totalData = append(totalData, total)
+		tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), item.Name, total})
 	}
 	chart := buildChart("bar", "近七天区域人流排名（Top10）", xLabels,
 		[]chartSeries{{Name: "人流量", Data: totalData}},
 		[]string{"排名", "区域", "人流量"}, tableRows)
-	answer := fmt.Sprintf("近七天人流最多的区域为「%s」，共 %d 人次。", records[0]["name"].String(), records[0]["total"].Int())
+	answer := fmt.Sprintf("近七天人流最多的区域为「%s」，共 %d 人次。", result.Series[0].Name, result.Series[0].InCount+result.Series[0].OutCount)
 	return answer, chart, nil
 }
+
+func fastPopHourlyTrendQuery(ctx context.Context, db gdb.DB) (string, string, error) {
+	from := gtime.Now().Format("Y-m-d")
+	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
+
+	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+		DateFrom: from,
+		DateTo:   to,
+		GroupBy:  "hour",
+	})
+	if err != nil || result == nil || len(result.Series) == 0 {
+		return "今日暂无按小时人流数据。", "", nil
+	}
+
+	xLabels := make([]string, 0, len(result.Series))
+	inData := make([]int, 0, len(result.Series))
+	outData := make([]int, 0, len(result.Series))
+	tableRows := make([][]any, 0, len(result.Series))
+	var totalAll int
+	var peakHour string
+	var peakCount int
+	for _, item := range result.Series {
+		total := item.InCount + item.OutCount
+		totalAll += total
+		xLabels = append(xLabels, item.Name)
+		inData = append(inData, item.InCount)
+		outData = append(outData, item.OutCount)
+		tableRows = append(tableRows, []any{item.Name, item.InCount, item.OutCount, total})
+		if total > peakCount {
+			peakCount = total
+			peakHour = item.Name
+		}
+	}
+	chart := buildChart("line", "今日人流按小时趋势", xLabels,
+		[]chartSeries{{Name: "进入人数", Data: inData}, {Name: "离开人数", Data: outData}},
+		[]string{"时段", "进入", "离开", "合计"}, tableRows)
+	answer := fmt.Sprintf("今日人流总计 %d 人次，高峰时段为%s（%d人次）。", totalAll, peakHour, peakCount)
+	return answer, chart, nil
+}
+
+
+
+
+
+
 
 // ---- Grid fast paths (via direct SQL on case_list) ----
 
@@ -1777,52 +1985,6 @@ func fastGridQuery(ctx context.Context, kind fastPathKind) (string, string, erro
 
 // ---- Population hourly trend fast path ----
 
-func fastPopHourlyTrendQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	tableName := discoverPopTable(ctx, db)
-	if tableName == "" {
-		return "当前未接入人流数据，无法查询按小时趋势。", "", nil
-	}
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	from := gtime.Now().Format("Y-m-d")
-	records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
-		SELECT HOUR(snapshot_time) AS hour,
-		       SUM(CASE WHEN direction = 'in' OR in_dir = 0 THEN 1 ELSE 0 END) AS in_count,
-		       SUM(CASE WHEN direction = 'out' OR in_dir = 1 THEN 1 ELSE 0 END) AS out_count,
-		       COUNT(*) AS total
-		FROM %s
-		WHERE snapshot_time >= ? AND snapshot_time <= ?
-		GROUP BY hour ORDER BY hour`, tableName), from, to).All()
-	if err != nil || len(records) == 0 {
-		return "今日暂无按小时人流数据。", "", nil
-	}
-	xLabels := make([]string, 0, len(records))
-	inData := make([]int, 0, len(records))
-	outData := make([]int, 0, len(records))
-	tableRows := make([][]any, 0, len(records))
-	var totalAll int
-	var peakHour string
-	var peakCount int
-	for _, r := range records {
-		h := fmt.Sprintf("%02d:00", r["hour"].Int())
-		ic := r["in_count"].Int()
-		oc := r["out_count"].Int()
-		t := r["total"].Int()
-		totalAll += t
-		xLabels = append(xLabels, h)
-		inData = append(inData, ic)
-		outData = append(outData, oc)
-		tableRows = append(tableRows, []any{h, ic, oc, t})
-		if t > peakCount {
-			peakCount = t
-			peakHour = h
-		}
-	}
-	chart := buildChart("line", "今日人流按小时趋势", xLabels,
-		[]chartSeries{{Name: "进入人数", Data: inData}, {Name: "离开人数", Data: outData}},
-		[]string{"时段", "进入", "离开", "合计"}, tableRows)
-	answer := fmt.Sprintf("今日人流总计 %d 人次，高峰时段为%s（%d人次）。", totalAll, peakHour, peakCount)
-	return answer, chart, nil
-}
 
 // ---- Grid case type distribution fast path ----
 
@@ -2221,7 +2383,7 @@ func trafficGateRankChartData(series []model.TrafficAggregateSeriesItem, limit i
 
 func discoverPopTable(ctx context.Context, db gdb.DB) string {
 	// Try common population table names
-	for _, t := range []string{"population_record", "population_gate_record", "population_snapshot"} {
+	for _, t := range []string{"population_flow_record", "population_metric_daily"} {
 		count, err := db.Model(t).Ctx(ctx).Count()
 		if err == nil && count >= 0 {
 			return t

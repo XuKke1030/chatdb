@@ -189,6 +189,7 @@ func aidgpTableSQL() []string {
 	region VARCHAR(128),
 	device_count INT NOT NULL DEFAULT 0,
 	stay_minutes INT NOT NULL DEFAULT 0,
+		is_hk_macau TINYINT(1) NOT NULL DEFAULT 0,
 	first_seen_at DATETIME NULL,
 	last_seen_at DATETIME NULL,
 	source_provider VARCHAR(32) NOT NULL DEFAULT 'aidgp',
@@ -201,11 +202,12 @@ func aidgpTableSQL() []string {
 	metric_date DATE NOT NULL,
 	region VARCHAR(64) NOT NULL DEFAULT '',
 	bucket VARCHAR(32) NOT NULL,
+		is_hk_macau TINYINT(1) NOT NULL DEFAULT 0,
 	vehicle_count BIGINT NOT NULL DEFAULT 0,
 	avg_stay_minutes DECIMAL(10,1) DEFAULT 0,
 	source_provider VARCHAR(32) DEFAULT 'aidgp',
 	update_time BIGINT NOT NULL DEFAULT 0,
-	UNIQUE KEY uk_stay_dist (metric_date, region, bucket)
+	UNIQUE KEY uk_stay_dist (metric_date, region, bucket, is_hk_macau)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS traffic_origin_daily (
 	id BIGINT PRIMARY KEY AUTO_INCREMENT,

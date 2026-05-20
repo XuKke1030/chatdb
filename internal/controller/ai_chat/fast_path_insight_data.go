@@ -1,13 +1,17 @@
 package ai_chat
 
 import (
+	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"ai-chat-sql/internal/service"
 )
 
 // extractInsightData 从结论文本和快问类型中提取关键数值，返回占位符→值映射
-func extractInsightData(kind fastPathKind, conclusion string) map[string]string {
+func extractInsightData(ctx context.Context, kind fastPathKind, conclusion string) map[string]string {
 	data := map[string]string{}
 
 	if conclusion == "" {
@@ -33,13 +37,13 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 	switch kind {
 	case fpTrafficToday:
 		data["total"] = firstOr(nums, "0")
-		data["level"] = trafficLevel(nums)
+		data["level"] = trafficLevel(ctx, nums)
 		data["peak"] = "高峰"
 		data["pressure"] = "较大"
 		data["action"] = "现场疏导"
 		if len(nums) > 0 {
 			total, _ := strconv.Atoi(nums[0])
-			if total < trafficHighThreshold {
+			if total < int(metricThreshold(ctx, "traffic", "traffic_daily_total", float64(trafficHighThreshold))) {
 				data["level"] = "正常"
 				data["pressure"] = "一般"
 				data["peak"] = "常规"
@@ -58,7 +62,7 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 		data["hkCount"] = firstOr(nums, "0")
 		if r, ok := data["hkRatio"]; ok {
 			pct, _ := strconv.ParseFloat(r, 64)
-			if pct > hkMacauHighRatioPct {
+			if pct > metricThreshold(ctx, "traffic", "hk_macau_ratio_pct", hkMacauHighRatioPct) {
 				data["hkLevel"] = "偏高"
 			} else {
 				data["hkLevel"] = "正常"
@@ -79,7 +83,7 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 			pct, _ := strconv.ParseFloat(m[1], 64)
 			outside := 100.0 - pct
 			data["outsideLevel"] = "正常"
-			if outside > provinceOutsideHighPct {
+			if outside > metricThreshold(ctx, "traffic", "province_outside_pct", provinceOutsideHighPct) {
 				data["outsideLevel"] = "偏高"
 			}
 		} else if r, ok := data["hkRatio"]; ok {
@@ -92,7 +96,7 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 		if pctVal >= 0 && pctVal < 1 {
 			data["yoyLevel"] = "微小"
 			data["needPlan"] = "暂无需"
-		} else if pctVal >= trafficYoYAlertPct {
+		} else if pctVal >= metricThreshold(ctx, "traffic", "yoy_change_pct", trafficYoYAlertPct) {
 			data["yoyLevel"] = "显著"
 			data["needPlan"] = "需"
 		} else {
@@ -103,7 +107,7 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 	case fpTrafficMoM:
 		data["momPct"] = extractPct(conclusion)
 		pctVal, _ := strconv.ParseFloat(data["momPct"], 64)
-		if pctVal >= trafficMoMAlertPct {
+		if pctVal >= metricThreshold(ctx, "traffic", "mom_change_pct", trafficMoMAlertPct) {
 			data["momLevel"] = "显著"
 		} else {
 			data["momLevel"] = "一般"
@@ -151,7 +155,7 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 		data["total"] = firstOr(nums, "0")
 		data["closeRate"] = extractPct(conclusion)
 		if cr, err := strconv.ParseFloat(data["closeRate"], 64); err == nil {
-			if cr < closeRateTarget*0.5 {
+			if cr < metricThreshold(ctx, "grid", "close_rate_pct", closeRateTarget)*0.5 {
 				data["caseLevel"] = "高"
 				data["pressureLevel"] = "较大"
 			} else {
@@ -165,9 +169,9 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 
 	case fpGridCloseRate:
 		data["closeRate"] = extractPct(conclusion)
-		data["target"] = formatFloat(closeRateTarget)
+		data["target"] = formatFloat(metricThreshold(ctx, "grid", "close_rate_pct", closeRateTarget))
 		cr, _ := strconv.ParseFloat(data["closeRate"], 64)
-		if cr >= closeRateTarget {
+		if cr >= metricThreshold(ctx, "grid", "close_rate_pct", closeRateTarget) {
 			data["comparedTo"] = "达到"
 		} else {
 			data["comparedTo"] = "低于"
@@ -180,6 +184,71 @@ func extractInsightData(kind fastPathKind, conclusion string) map[string]string 
 	case fpGridCaseTypeDist:
 		data["topType"] = extractQuotedName(conclusion)
 		data["topPct"] = extractPct(conclusion)
+
+	case fpTrafficDwellTop:
+		data["top_plate"] = extractQuotedName(conclusion)
+		dwellRe := regexp.MustCompile(`(\d+)\s*小时`)
+		if m := dwellRe.FindStringSubmatch(conclusion); len(m) > 1 {
+			data["dwell_hours"] = m[1]
+		} else {
+			data["dwell_hours"] = firstOr(nums, "0")
+		}
+
+	case fpTrafficForeignOrigin:
+		data["top_province"] = extractQuotedName(conclusion)
+		data["top_count"] = firstOr(nums, "0")
+
+	case fpTrafficHkMacauStay:
+		data["bucket"] = extractQuotedName(conclusion)
+		data["avgStay"] = firstOr(nums, "0")
+
+	case fpPopHolidayCompare:
+		data["holiday_avg"] = firstOr(nums, "0")
+		data["workday_avg"] = nthOr(nums, 1, firstOr(nums, "0"))
+		data["change_pct"] = extractPct(conclusion)
+		data["direction"] = dir
+
+	case fpPopYoY:
+		data["current_val"] = firstOr(nums, "0")
+		data["prior_val"] = nthOr(nums, 1, firstOr(nums, "0"))
+		data["change_pct"] = extractPct(conclusion)
+		data["direction"] = dir
+
+	case fpPopMultiRegionCompare:
+		data["top_region"] = extractQuotedName(conclusion)
+		data["top_val"] = firstOr(nums, "0")
+		if len(nums) >= 2 {
+			v1, _ := strconv.Atoi(nums[0])
+			v2, _ := strconv.Atoi(nums[len(nums)-1])
+			diff := v1 - v2
+			if diff < 0 {
+				diff = -diff
+			}
+			data["max_diff"] = fmt.Sprintf("%d", diff)
+		} else {
+			data["max_diff"] = "—"
+		}
+
+	case fpPopFloatingAnomaly:
+		data["anomaly_count"] = firstOr(nums, "0")
+		data["top_region"] = extractQuotedName(conclusion)
+		data["top_pct"] = extractPct(conclusion)
+
+	case fpGridOverview:
+		data["total_cases"] = firstOr(nums, "0")
+		data["close_rate"] = extractPct(conclusion)
+		if cr, err := strconv.ParseFloat(data["close_rate"], 64); err == nil {
+			if cr < metricThreshold(ctx, "grid", "close_rate_pct", closeRateTarget) {
+				data["close_rate_direction"] = "偏低"
+				data["efficiency_direction"] = "待提升"
+			} else {
+				data["close_rate_direction"] = "达标"
+				data["efficiency_direction"] = "良好"
+			}
+		} else {
+			data["close_rate_direction"] = "—"
+			data["efficiency_direction"] = "—"
+		}
 	}
 
 	return data
@@ -252,10 +321,20 @@ func nthOr(nums []string, n int, fallback string) string {
 	return fallback
 }
 
-func trafficLevel(nums []string) string {
+func metricThreshold(ctx context.Context, topic, metricName string, fallback float64) float64 {
+	if service.Metric() != nil {
+		v, _, found := service.Metric().GetThreshold(ctx, topic, metricName)
+		if found {
+			return v
+		}
+	}
+	return fallback
+}
+
+func trafficLevel(ctx context.Context, nums []string) string {
 	if len(nums) > 0 {
 		total, err := strconv.Atoi(nums[0])
-		if err == nil && total >= trafficHighThreshold {
+		if err == nil && total >= int(metricThreshold(ctx, "traffic", "traffic_daily_total", float64(trafficHighThreshold))) {
 			return "高位"
 		}
 	}

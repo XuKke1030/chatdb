@@ -14,14 +14,20 @@ type KnowledgeBaseItem struct {
 	SourceProvider string `json:"sourceProvider"`
 	ExternalId     string `json:"externalId,omitempty"`
 	UpdateTime     int    `json:"updateTime"`
+	DocumentCount  int    `json:"documentCount"`
+	IsDefault      bool   `json:"isDefault"`
+	DocType        string `json:"docType"`
 }
 
 type KnowledgeBasesReq struct {
-	g.Meta `path:"/qa/knowledge-bases" method:"get" tags:"V1/问答" sm:"问答知识库列表" dc:"获取当前用户有权限访问的问答知识库"`
+	g.Meta  `path:"/qa/knowledge-bases" method:"get" tags:"V1/问答" sm:"问答知识库列表" dc:"获取当前用户有权限访问的问答知识库"`
+	Topic   string `json:"topic" p:"topic" dc:"按主题筛选绑定知识库，不传则返回全部"`
+	DocType string `json:"docType" p:"docType" dc:"按文档类型筛选：policy|manual|form|rule|case，不传则返回全部"`
 }
 
 type KnowledgeBasesRes struct {
-	List []KnowledgeBaseItem `json:"list"`
+	List        []KnowledgeBaseItem `json:"list"`
+	EmptyReason string              `json:"emptyReason,omitempty"`
 }
 
 type RetrieveReq struct {
@@ -29,6 +35,7 @@ type RetrieveReq struct {
 	Question      string `json:"question" v:"required#问题不能为空"`
 	KnowledgeCode string `json:"knowledgeCode" dc:"知识库编码，不传则检索当前用户可访问的全部知识库"`
 	TopK          int    `json:"topK" dc:"返回条数，默认5，最大20"`
+	ActiveOnly    bool   `json:"activeOnly" dc:"仅返回有效版本文档，默认true"`
 }
 
 type RetrieveItem struct {
@@ -41,6 +48,8 @@ type RetrieveItem struct {
 	Page          int     `json:"page"`
 	Anchor        string  `json:"anchor"`
 	Score         float64 `json:"score"`
+	EffectiveDate string  `json:"effectiveDate,omitempty"`
+	Status        string  `json:"status,omitempty"`
 }
 
 type RetrieveRes struct {
@@ -51,6 +60,7 @@ type ChatReq struct {
 	g.Meta        `path:"/qa/chats" method:"post" tags:"V1/问答" sm:"问答流式输出" dc:"基于知识库召回结果进行问答并通过SSE流式返回"`
 	Message       string                  `json:"message" v:"required#问题不能为空"`
 	KnowledgeCode string                  `json:"knowledgeCode" dc:"知识库编码，不传则在当前用户可访问范围内检索"`
+	Topic         string                  `json:"topic" dc:"主题(grid/population/traffic)，不传则不限知识库范围"`
 	SessionId     string                  `json:"sessionId" dc:"会话ID，不传则自动创建"`
 	History       []model.ChatHistoryItem `json:"history" dc:"前端附带的临时上下文，服务端会合并已存储历史"`
 	TopK          int                     `json:"topK" dc:"召回条数，默认5，最大20"`
@@ -107,7 +117,27 @@ type DocumentViewRes struct {
 	SourceProvider string                `json:"sourceProvider"`
 	ExternalId     string                `json:"externalId,omitempty"`
 	Status         string                `json:"status"`
+	EffectiveDate  string                `json:"effectiveDate,omitempty"`
+	RepealDate     string                `json:"repealDate,omitempty"`
+	RepealedBy     string                `json:"repealedBy,omitempty"`
+	Versions       []DocumentVersionItem `json:"versions,omitempty"`
+	RelatedDocs    []RelatedDocItem      `json:"relatedDocs,omitempty"`
 	Segments       []DocumentSegmentItem `json:"segments"`
+}
+
+type RelatedDocItem struct {
+	DocumentId int64  `json:"documentId"`
+	Title      string `json:"title"`
+	RelType    string `json:"relType"`
+}
+
+type DocumentVersionItem struct {
+	DocumentId    int64  `json:"documentId"`
+	Title         string `json:"title"`
+	Status        string `json:"status"`
+	EffectiveDate string `json:"effectiveDate,omitempty"`
+	RepealDate    string `json:"repealDate,omitempty"`
+	IsCurrent     bool   `json:"isCurrent"`
 }
 
 type PopularQuestionsReq struct {

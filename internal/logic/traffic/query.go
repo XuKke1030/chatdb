@@ -1,6 +1,7 @@
 package traffic
 
 import (
+	"ai-chat-sql/internal/logic/plate"
 	"ai-chat-sql/internal/model"
 	"context"
 	"fmt"
@@ -129,7 +130,7 @@ SUM(province_outside_count) AS province_outside_count`).One()
 }
 
 // StayDistribution returns stay time distribution buckets for a date range.
-func (s *sTraffic) StayDistribution(ctx context.Context, dateFrom, dateTo, region string) ([]model.TrafficStayBucketItem, error) {
+func (s *sTraffic) StayDistribution(ctx context.Context, dateFrom, dateTo, region, isHkMacau string) ([]model.TrafficStayBucketItem, error) {
 	db := g.DB("master")
 	m := db.Model("traffic_stay_distribution_daily").Ctx(ctx)
 	if dateFrom != "" {
@@ -463,7 +464,7 @@ func (s *sTraffic) ListDevices(ctx context.Context, query model.TrafficDeviceQue
 	return &model.TrafficDeviceListResult{List: list}, nil
 }
 
-func applyTrafficRecordFilters(m *gdb.Model, dateFrom string, dateTo string, deviceId string, plate string, isHkMacau string) *gdb.Model {
+func applyTrafficRecordFilters(m *gdb.Model, dateFrom string, dateTo string, deviceId string, plateStr string, isHkMacau string) *gdb.Model {
 	if from := normalizeQueryTime(dateFrom, false); from != "" {
 		m = m.Where("snapshot_time >= ?", from)
 	}
@@ -473,9 +474,9 @@ func applyTrafficRecordFilters(m *gdb.Model, dateFrom string, dateTo string, dev
 	if strings.TrimSpace(deviceId) != "" {
 		m = m.Where("device_id = ?", strings.TrimSpace(deviceId))
 	}
-	if strings.TrimSpace(plate) != "" {
-		normalized := normalizePlate(plate)
-		m = m.Where("(plate_normalized = ? OR plate_char = ?)", normalized, strings.TrimSpace(plate))
+	if strings.TrimSpace(plateStr) != "" {
+		normalized := plate.NormalizePlate(plateStr)
+		m = m.Where("(plate_normalized = ? OR plate_char = ?)", normalized, strings.TrimSpace(plateStr))
 	}
 	if enabled, ok := parseBoolFilter(isHkMacau); ok {
 		m = m.Where("is_hk_macau = ?", boolInt(enabled))

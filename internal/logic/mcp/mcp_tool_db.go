@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/encoding/gjson"
@@ -33,33 +34,53 @@ func (s *sMcpTool) ExecSql(ctx context.Context, request mcp.CallToolRequest) (ou
 		return
 	}
 
-	// 检查是否启用只读模式
-	if consts.Config.DbConfig != nil && consts.Config.DbConfig.Readonly {
-		if !isReadOnlySQL(sql) {
-			errMsg := "数据库当前处于只读模式，只允许执行查询操作（SELECT语句）"
-			consts.Logger.Warning(ctx, errMsg)
-			out = mcp.NewToolResultText(errMsg)
-			err = nil
-			return
-		}
+	// 强制只读检查：任何 SQL 必须通过 isReadOnlySQL 校验
+	if !isReadOnlySQL(sql) {
+		errMsg := "安全策略：仅允许 SELECT / WITH / SHOW / DESCRIBE / EXPLAIN 查询，禁止执行写操作"
+		consts.Logger.Warning(ctx, errMsg)
+		out = mcp.NewToolResultText(errMsg)
+		err = nil
+		return
 	}
 
-	sqlOut, err := db.Query(ctx, sql)
-	if err != nil {
-		outStr := fmt.Sprintf("数据库执行失败：%s", err.Error())
+	// 30s 查询超时（防止无界查询拖垮服务，LLM 超时后会自动修正 SQL）
+	queryCtx, queryCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer queryCancel()
+
+	queryStart := time.Now()
+	sqlOut, queryErr := db.Query(queryCtx, sql)
+	queryMs := time.Since(queryStart).Milliseconds()
+
+	if queryCtx.Err() == context.DeadlineExceeded {
+		errMsg := "查询执行超时（30秒），请尝试简化查询或添加更严格的时间范围条件"
+		consts.Logger.Warning(ctx, errMsg)
+		out = mcp.NewToolResultText(errMsg)
+		err = nil
+		return
+	}
+
+	if queryErr != nil {
+		outStr := fmt.Sprintf("数据库执行失败：%s", queryErr.Error())
 		consts.Logger.Error(ctx, outStr)
+		consts.Logger.Infof(ctx, "sql_audit sql=%s durationMs=%d rowCount=0 error=%v", sql, queryMs, queryErr)
 		out = mcp.NewToolResultText(outStr)
 		err = nil
 		return
 	}
 
-	respStr, err := utility.ConvertAnyToMarkdownTable(sqlOut.List())
-	if err != nil {
+	rows := sqlOut.List()
+	rowCount := len(rows)
+
+	respStr, convErr := utility.ConvertAnyToMarkdownTable(rows)
+	if convErr != nil {
+		err = convErr
 		return
 	}
 
+	// 审计日志
+	consts.Logger.Infof(ctx, "sql_audit sql=%s durationMs=%d rowCount=%d", sql, queryMs, rowCount)
+
 	// 在返回结果中包含执行的 SQL 语句信息
-	// 格式：SQL 语句作为前缀，然后是执行结果
 	fullResult := fmt.Sprintf("**执行的 SQL：**\n\n```sql\n%s\n```\n\n**执行结果：**\n\n%s", sql, respStr)
 	out = mcp.NewToolResultText(fullResult)
 	return
@@ -296,12 +317,18 @@ func isReadOnlySQL(sql string) bool {
 		" INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ", " CREATE ",
 		" TRUNCATE ", " REPLACE ", " GRANT ", " REVOKE ", " EXEC ", " CALL ",
 		" MERGE ", " LOCK ", " UNLOCK ", " RENAME ", " OUTFILE", " DUMPFILE",
+		" INFORMATION_SCHEMA", " LOAD_FILE", " BENCHMARK", " SLEEP",
 	}
 	paddedSQL := " " + sql + " "
 	for _, keyword := range dangerousKeywords {
 		if strings.Contains(paddedSQL, keyword) {
 			return false
 		}
+	}
+
+	// 单独检查 INTO OUTFILE / INTO DUMPFILE（可能跨单词匹配）
+	if strings.Contains(sql, "INTO OUTFILE") || strings.Contains(sql, "INTO DUMPFILE") {
+		return false
 	}
 
 	// 检查是否以SELECT开头（包括WITH语句，因为WITH通常用于查询）

@@ -82,27 +82,58 @@ func (c *HTTPClient) SyncPermissions(ctx context.Context, scope SyncScope) (Sync
 }
 
 func (c *HTTPClient) SyncGridData(ctx context.Context, scope SyncScope) (SyncResult, error) {
-	return c.syncList(ctx, SyncGridData, c.cfg.GridQueryPath, map[string]any{
+	req := map[string]any{
 		"requestId": newRequestId(),
 		"page":      1,
 		"pageSize":  500,
-	})
+	}
+	if scope.Since != "" {
+		req["updatedAfter"] = scope.Since
+	}
+	return c.syncList(ctx, SyncGridData, c.cfg.GridQueryPath, req)
 }
 
 func (c *HTTPClient) SyncTrafficData(ctx context.Context, scope SyncScope) (SyncResult, error) {
-	return c.syncList(ctx, SyncTrafficData, c.cfg.TrafficQueryPath, map[string]any{
+	req := map[string]any{
 		"requestId": newRequestId(),
 		"page":      1,
 		"pageSize":  500,
-	})
+	}
+	if scope.Since != "" {
+		req["updatedAfter"] = scope.Since
+	}
+	return c.syncList(ctx, SyncTrafficData, c.cfg.TrafficQueryPath, req)
 }
 
 func (c *HTTPClient) SyncPopulationData(ctx context.Context, scope SyncScope) (SyncResult, error) {
-	return c.syncList(ctx, SyncPopulationData, c.cfg.PopulationQueryPath, map[string]any{
+	req := map[string]any{
 		"requestId": newRequestId(),
 		"page":      1,
 		"pageSize":  500,
-	})
+	}
+	if scope.Since != "" {
+		req["updatedAfter"] = scope.Since
+	}
+	return c.syncList(ctx, SyncPopulationData, c.cfg.PopulationQueryPath, req)
+}
+
+func (c *HTTPClient) SyncByType(ctx context.Context, syncType string) (SyncResult, error) {
+	switch syncType {
+	case SyncKnowledgeBases:
+		return c.SyncKnowledgeBases(ctx, SyncScope{})
+	case SyncDocuments:
+		return c.SyncDocuments(ctx, SyncScope{})
+	case SyncPermissions:
+		return c.SyncPermissions(ctx, SyncScope{})
+	case SyncGridData:
+		return c.SyncGridData(ctx, SyncScope{})
+	case SyncTrafficData:
+		return c.SyncTrafficData(ctx, SyncScope{})
+	case SyncPopulationData:
+		return c.SyncPopulationData(ctx, SyncScope{})
+	default:
+		return SyncResult{}, fmt.Errorf("unknown sync type: %s", syncType)
+	}
 }
 
 func (c *HTTPClient) syncList(ctx context.Context, syncType string, path string, req map[string]any) (SyncResult, error) {
@@ -155,6 +186,15 @@ func (c *HTTPClient) syncList(ctx context.Context, syncType string, path string,
 	}
 	if syncType == SyncGridData {
 		log := refreshGridMetrics(ctx)
+		logs = append(logs, log)
+		if log.Status == "success" {
+			successCount++
+		} else {
+			failureCount++
+		}
+	}
+	if syncType == SyncPopulationData {
+		log := refreshPopulationAggregates(ctx)
 		logs = append(logs, log)
 		if log.Status == "success" {
 			successCount++

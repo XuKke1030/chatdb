@@ -112,7 +112,7 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 			cached.FormatMs = 0
 			cached.TotalMs = time.Since(totalStart).Milliseconds()
 			if cached.Format.Version == "" {
-				cached.Format = buildFastPathFormatMeta(intent.legacy, cached.Conclusion, cached.ChartData)
+				cached.Format = buildFastPathFormatMeta(ctx, intent.legacy, cached.Conclusion, cached.ChartData)
 			}
 			consts.Logger.Infof(ctx, "AskNumberCache hit key=%s ttl=%s intent=%s topic=%s totalMs=%d", cacheKey, ttl, intent.Intent, intent.Topic, cached.TotalMs)
 			return cached, nil
@@ -127,9 +127,9 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 		return nil, err
 	}
 	formatStart := time.Now()
-	answer := formatFastPathAnswer(intent.legacy, conclusion, chartData)
+	answer := formatFastPathAnswer(ctx, intent.legacy, conclusion, chartData)
 	formatMs := time.Since(formatStart).Milliseconds()
-	format := buildFastPathFormatMeta(intent.legacy, conclusion, chartData)
+	format := buildFastPathFormatMeta(ctx, intent.legacy, conclusion, chartData)
 	if format.InsightMeta != nil {
 		consts.Logger.Infof(ctx, "AskNumberInsight intent=%s topic=%s keyPoints=%d impacts=%d suggestions=%d collapsed=%v",
 			intent.Intent, intent.Topic,
@@ -207,12 +207,12 @@ func (c *ControllerV1) streamFastPathIntentAnswer(ctx context.Context, intent *F
 	return &v1.ChatRes{}, nil
 }
 
-func buildFastPathFormatMeta(fp *fastPath, conclusion string, chartData string) FastPathFormatMeta {
+func buildFastPathFormatMeta(ctx context.Context, fp *fastPath, conclusion string, chartData string) FastPathFormatMeta {
 	sections := []string{"精准结论", "特征洞察", "洞察分析"}
 	if strings.TrimSpace(chartData) != "" {
 		sections = []string{"精准结论", "特征洞察", "可视化", "洞察分析"}
 	}
-	insightMeta := buildInsightMeta(fp, conclusion)
+	insightMeta := buildInsightMeta(ctx, fp, conclusion)
 	insightCollapsedDefault := shouldCollapseInsight(insightMeta)
 	return FastPathFormatMeta{
 		Version:                 "ask-number-fastpath-v1",
@@ -260,8 +260,8 @@ func shouldCollapseInsight(meta *FastPathInsightMeta) bool {
 	return true
 }
 
-func buildInsightMeta(fp *fastPath, conclusion string) *FastPathInsightMeta {
-	keyPoints, impacts, suggestions := buildKindInsight(fp, conclusion)
+func buildInsightMeta(ctx context.Context, fp *fastPath, conclusion string) *FastPathInsightMeta {
+	keyPoints, impacts, suggestions := buildKindInsight(ctx, fp, conclusion)
 	if len(keyPoints) == 0 && len(impacts) == 0 && len(suggestions) == 0 {
 		return nil
 	}
@@ -288,8 +288,20 @@ func fastPathChartRule(fp *fastPath, chartData string) string {
 		return "bar_compare"
 	case fpPopHourlyTrend:
 		return "line_trend"
+	case fpPopYoY:
+		return "bar_compare"
+	case fpPopMultiRegionCompare:
+		return "line_trend"
+	case fpPopFloatingAnomaly:
+		return "bar_rank"
 	case fpGridCaseTypeDist:
 		return "pie"
+	case fpTrafficOverview:
+		return "line_trend,bar_rank,pie"
+	case fpPopOverview:
+		return "line_trend,bar_rank"
+	case fpGridOverview:
+		return "bar_rank,pie"
 	default:
 		return "chart"
 	}
@@ -323,6 +335,12 @@ func fastPathIntentName(kind fastPathKind) string {
 		return "population.rank.region"
 	case fpPopHourlyTrend:
 		return "population.trend.hourly"
+	case fpPopYoY:
+		return "population.compare.yoy"
+	case fpPopMultiRegionCompare:
+		return "population.compare.multi_region"
+	case fpPopFloatingAnomaly:
+		return "population.floating.anomaly"
 	case fpGridCaseCount:
 		return "grid.case.count"
 	case fpGridCloseRate:
@@ -331,6 +349,26 @@ func fastPathIntentName(kind fastPathKind) string {
 		return "grid.rank.region"
 	case fpGridCaseTypeDist:
 		return "grid.case.type_dist"
+	case fpTrafficProvinceInside:
+		return "traffic.ratio.province_inside"
+	case fpTrafficYoY:
+		return "traffic.compare.yoy"
+	case fpTrafficMoM:
+		return "traffic.compare.mom"
+	case fpTrafficHoliday:
+		return "traffic.holiday"
+	case fpTrafficStayDistribution:
+		return "traffic.dwell.distribution"
+	case fpTrafficHkMacauStay:
+		return "traffic.dwell.hk_macau_distribution"
+	case fpTrafficOriginByProvince:
+		return "traffic.rank.origin_province"
+	case fpTrafficOverview:
+		return "traffic.overview"
+	case fpPopOverview:
+		return "population.overview"
+	case fpGridOverview:
+		return "grid.overview"
 	default:
 		return "unknown"
 	}

@@ -1,6 +1,7 @@
 package traffic
 
 import (
+	"ai-chat-sql/internal/logic/plate"
 	"ai-chat-sql/internal/model"
 	"context"
 	"crypto/sha256"
@@ -175,8 +176,8 @@ func (p *gatePayload) toRecordInput(rawText string, hash string) (model.TrafficG
 	if err != nil {
 		return model.TrafficGateRecordInput{}, fmt.Errorf("invalid cd: %w", err)
 	}
-	normalized := normalizePlate(p.PlateChar)
-	recognition := recognizePlate(p.PlateChar)
+	normalized := plate.NormalizePlate(p.PlateChar)
+	recognition := plate.RecognizePlateFull(p.PlateChar)
 	return model.TrafficGateRecordInput{
 		DeviceId:         strings.TrimSpace(p.DeviceID),
 		DeviceName:       strings.TrimSpace(p.DeviceName),
@@ -207,6 +208,7 @@ func (p *gatePayload) toRecordInput(rawText string, hash string) (model.TrafficG
 		PlateOrigin:      recognition.Origin,
 		PlateRegionType:  recognition.RegionType,
 		IsHkMacau:        recognition.IsHongKongMacau,
+			IsProvinceInside: recognition.IsProvinceInside,
 		RawPayload:       rawText,
 		PayloadHash:      hash,
 	}, nil
@@ -242,11 +244,4 @@ func payloadHash(raw []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func normalizePlate(plate string) string {
-	plate = strings.TrimSpace(plate)
-	plate = strings.ReplaceAll(plate, " ", "")
-	plate = strings.ReplaceAll(plate, "-", "")
-	plate = strings.ReplaceAll(plate, "路", "")
-	plate = strings.TrimRight(plate, "警学")
-	return strings.ToUpper(plate)
-}
+

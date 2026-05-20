@@ -23,6 +23,10 @@ jwt:
     secret: "chatdb-jwt-secret-key-2024"
     expire: 24
     issuer: "chatdb"
+  - subject: "ai-chat-admin"
+    secret: "chatdb-admin-jwt-secret-key-2024"
+    expire: 8
+    issuer: "chatdb"
 
 db:
   readonly: false

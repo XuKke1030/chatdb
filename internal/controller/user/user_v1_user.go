@@ -234,6 +234,8 @@ func bootstrapGuest(ctx context.Context) *v1.UserBootstrapRes {
 		KnowledgeBases:    []v1.UserKnowledgePermission{},
 		PopularQuestions:  []v1.UserPopularQuestionItem{},
 		AlertSummary:      emptyAlertSummary(),
+		WelcomeMessage:    "您好",
+		WelcomeSubtext:    "今天想了解什么？登录后即可开始提问",
 	}
 }
 
@@ -264,6 +266,8 @@ func buildUserBootstrap(ctx context.Context, userId int64) (*v1.UserBootstrapRes
 		KnowledgeBases:    knowledgeBases,
 		PopularQuestions:  popularQuestions,
 		AlertSummary:      alertSummary,
+		WelcomeMessage:    buildWelcomeMessage(outUser),
+		WelcomeSubtext:    buildWelcomeSubtext(topics),
 	}, nil
 }
 
@@ -275,6 +279,43 @@ func enabledTopics(items []model.TopicItem) []model.TopicItem {
 		}
 	}
 	return list
+}
+
+func buildWelcomeMessage(user model.User) string {
+	hour := time.Now().Hour()
+	var greeting string
+	switch {
+	case hour < 6:
+		greeting = "夜深了"
+	case hour < 9:
+		greeting = "早上好"
+	case hour < 12:
+		greeting = "上午好"
+	case hour < 14:
+		greeting = "中午好"
+	case hour < 18:
+		greeting = "下午好"
+	default:
+		greeting = "晚上好"
+	}
+	name := user.Username
+	if name == "" {
+		name = "用户"
+	}
+	return fmt.Sprintf("%s，%s", greeting, name)
+}
+
+func buildWelcomeSubtext(topics []model.TopicItem) string {
+	labels := make([]string, 0, len(topics))
+	for _, t := range topics {
+		if t.Enabled {
+			labels = append(labels, t.Label)
+		}
+	}
+	if len(labels) > 0 {
+		return fmt.Sprintf("今天想了解什么？可以问我%s相关的问题", strings.Join(labels, "、"))
+	}
+	return "今天想了解什么？请选择业务主题开始提问"
 }
 
 func enabledKnowledgeBases(items []v1.UserKnowledgePermission) []v1.UserKnowledgePermission {

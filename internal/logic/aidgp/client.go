@@ -20,6 +20,7 @@ const (
 
 type SyncScope struct {
 	KnowledgeCode string
+	Since         string
 }
 
 type SyncLog struct {
@@ -46,6 +47,7 @@ type Client interface {
 	SyncGridData(ctx context.Context, scope SyncScope) (SyncResult, error)
 	SyncTrafficData(ctx context.Context, scope SyncScope) (SyncResult, error)
 	SyncPopulationData(ctx context.Context, scope SyncScope) (SyncResult, error)
+	SyncByType(ctx context.Context, syncType string) (SyncResult, error)
 }
 
 type Config struct {
@@ -163,4 +165,23 @@ func (c *MockClient) SyncPopulationData(ctx context.Context, scope SyncScope) (S
 			{ExternalId: "aidgp-population-contract", LocalId: "population:pending-contract", Action: "skip", Status: "skipped", Message: "等待人流字段格式与同步口径"},
 		},
 	}, nil
+}
+
+func (c *MockClient) SyncByType(ctx context.Context, syncType string) (SyncResult, error) {
+	switch syncType {
+	case SyncKnowledgeBases:
+		return c.SyncKnowledgeBases(ctx, SyncScope{})
+	case SyncDocuments:
+		return c.SyncDocuments(ctx, SyncScope{})
+	case SyncPermissions:
+		return c.SyncPermissions(ctx, SyncScope{})
+	case SyncGridData:
+		return c.SyncGridData(ctx, SyncScope{})
+	case SyncTrafficData:
+		return c.SyncTrafficData(ctx, SyncScope{})
+	case SyncPopulationData:
+		return c.SyncPopulationData(ctx, SyncScope{})
+	default:
+		return SyncResult{}, fmt.Errorf("unknown sync type: %s", syncType)
+	}
 }

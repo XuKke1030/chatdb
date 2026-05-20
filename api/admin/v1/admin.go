@@ -15,6 +15,7 @@ type KnowledgePermission struct {
 	Code    string `json:"code"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+	DocType string `json:"docType"`
 }
 
 type AdminLoginReq struct {
@@ -266,6 +267,40 @@ type AdminGridImportErrorsRes struct {
 	List []GridImportErrorItem `json:"list"`
 }
 
+type AdminGridImportTemplateReq struct {
+	g.Meta `path:"/admin/grid-data/template" method:"get" tags:"V1/Admin" sm:"download grid import template"`
+}
+
+type AdminGridImportTemplateRes struct{}
+
+type AdminGridImportRollbackReq struct {
+	g.Meta    `path:"/admin/grid-data/imports/{id}/rollback" method:"post" tags:"V1/Admin" sm:"rollback grid import"`
+	Id       int    `json:"id" p:"id"`
+	Operator string `json:"operator"`
+}
+
+type AdminGridImportRollbackRes struct {
+	Item GridImportItem `json:"item"`
+}
+
+type GridImportAuditItem struct {
+	Id         int    `json:"id"`
+	ImportId   int    `json:"importId"`
+	Action     string `json:"action"`
+	Operator   string `json:"operator"`
+	Detail     string `json:"detail"`
+	CreateTime int    `json:"createTime"`
+}
+
+type AdminGridImportAuditReq struct {
+	g.Meta `path:"/admin/grid-data/imports/{id}/audit" method:"get" tags:"V1/Admin" sm:"grid import audit trail"`
+	Id     int `json:"id" p:"id"`
+}
+
+type AdminGridImportAuditRes struct {
+	List []GridImportAuditItem `json:"list"`
+}
+
 type AdminSyncKnowledgeBasesReq struct {
 	g.Meta `path:"/admin/sync/knowledge-bases" method:"post" tags:"V1/Admin" sm:"sync knowledge bases"`
 }
@@ -289,11 +324,21 @@ type AdminRefreshTrafficAggregatesReq struct {
 	DateTo   string `json:"dateTo" d:"" dc:"截止日期 Y-m-d"`
 }
 
+type AdminRefreshPopulationAggregatesReq struct {
+	g.Meta   `path:"/admin/population/refresh-aggregates" method:"post" tags:"V1/Admin" sm:"refresh population aggregates"`
+	DateFrom string `json:"dateFrom" d:"" dc:"起始日期 Y-m-d"`
+	DateTo   string `json:"dateTo" d:"" dc:"截止日期 Y-m-d"`
+}
+
 type AdminSyncHolidayReq struct {
 	g.Meta `path:"/admin/traffic/sync-holidays" method:"post" tags:"V1/Admin" sm:"sync holidays from code"`
 }
 
 type AdminRefreshTrafficAggregatesRes struct {
+	Ok bool `json:"ok"`
+}
+
+type AdminRefreshPopulationAggregatesRes struct {
 	Ok bool `json:"ok"`
 }
 
@@ -508,4 +553,212 @@ type AdminLogsReq struct {
 
 type AdminLogsRes struct {
 	List []AdminLogItem `json:"list"`
+}
+
+type AdminMetricItem struct {
+	ID                int64    `json:"id"`
+	Topic             string   `json:"topic"`
+	MetricName        string   `json:"metricName"`
+	DisplayName       string   `json:"displayName"`
+	Description       string   `json:"description"`
+	Unit              string   `json:"unit"`
+	Dimensions        []string `json:"dimensions"`
+	DefaultThreshold  *float64 `json:"defaultThreshold"`
+	ThresholdDirection string   `json:"thresholdDirection"`
+	RelatedFastPath   *int     `json:"relatedFastPath"`
+	ChartTypeHint     string   `json:"chartTypeHint"`
+	IsActive          bool     `json:"isActive"`
+	CreateTime        int      `json:"createTime"`
+	UpdateTime        int      `json:"updateTime"`
+}
+
+type AdminMetricsReq struct {
+	g.Meta `path:"/admin/metrics" method:"get" tags:"V1/Admin" sm:"list metrics"`
+	Topic  string `json:"topic" p:"topic"`
+}
+
+type AdminMetricsRes struct {
+	List []AdminMetricItem `json:"list"`
+}
+
+type AdminMetricCreateReq struct {
+	g.Meta             `path:"/admin/metrics" method:"post" tags:"V1/Admin" sm:"create metric"`
+	Topic              string    `json:"topic" v:"required"`
+	MetricName         string    `json:"metricName" v:"required"`
+	DisplayName        string    `json:"displayName" v:"required"`
+	Description        string    `json:"description"`
+	Unit               string    `json:"unit"`
+	Dimensions         []string  `json:"dimensions"`
+	DefaultThreshold   *float64  `json:"defaultThreshold"`
+	ThresholdDirection string    `json:"thresholdDirection" d:"above"`
+	RelatedFastPath    *int      `json:"relatedFastPath"`
+	ChartTypeHint      string    `json:"chartTypeHint" d:"line"`
+}
+
+type AdminMetricCreateRes struct {
+	Id int64 `json:"id"`
+}
+
+type AdminMetricUpdateReq struct {
+	g.Meta             `path:"/admin/metrics/{id}" method:"put" tags:"V1/Admin" sm:"update metric"`
+	Id                 int64
+	DisplayName        *string   `json:"displayName"`
+	Description         *string   `json:"description"`
+	Unit               *string   `json:"unit"`
+	Dimensions         *[]string `json:"dimensions"`
+	DefaultThreshold   **float64 `json:"defaultThreshold"`
+	ThresholdDirection *string   `json:"thresholdDirection"`
+	RelatedFastPath    **int     `json:"relatedFastPath"`
+	ChartTypeHint      *string   `json:"chartTypeHint"`
+}
+
+type AdminMetricUpdateRes struct{}
+
+type AdminMetricDeleteReq struct {
+	g.Meta `path:"/admin/metrics/{id}" method:"delete" tags:"V1/Admin" sm:"delete metric"`
+	Id     int64
+}
+
+type AdminMetricDeleteRes struct{}
+
+type AdminMetricToggleReq struct {
+	g.Meta `path:"/admin/metrics/{id}/toggle" method:"put" tags:"V1/Admin" sm:"toggle metric active"`
+	Id     int64
+}
+
+type AdminMetricToggleRes struct {
+	IsActive bool `json:"isActive"`
+}
+
+type TopicKnowledgeBindingItem struct {
+	Id            int    `json:"id"`
+	Topic         string `json:"topic"`
+	KnowledgeCode string `json:"knowledgeCode"`
+	KnowledgeName string `json:"knowledgeName"`
+	Enabled       bool   `json:"enabled"`
+	CreateTime     int    `json:"createTime"`
+	UpdateTime     int    `json:"updateTime"`
+}
+
+type AdminTopicKnowledgeBindingsReq struct {
+	g.Meta `path:"/admin/topic-knowledge-bindings" method:"get" tags:"V1/Admin" sm:"list topic-knowledge bindings"`
+	Topic  string `json:"topic" p:"topic" dc:"按主题筛选"`
+}
+
+type AdminTopicKnowledgeBindingsRes struct {
+	List []TopicKnowledgeBindingItem `json:"list"`
+}
+
+type AdminBindTopicKnowledgeReq struct {
+	g.Meta         `path:"/admin/topic-knowledge-bindings" method:"post" tags:"V1/Admin" sm:"bind knowledge base to topic"`
+	Topic          string `json:"topic" v:"required#主题不能为空"`
+	KnowledgeCode  string `json:"knowledgeCode" v:"required#知识库编码不能为空"`
+}
+
+type AdminBindTopicKnowledgeRes struct {
+	Item TopicKnowledgeBindingItem `json:"item"`
+}
+
+type AdminUnbindTopicKnowledgeReq struct {
+	g.Meta `path:"/admin/topic-knowledge-bindings/{id}" method:"delete" tags:"V1/Admin" sm:"unbind knowledge base from topic"`
+	Id     int `json:"id" p:"id"`
+}
+
+type AdminUnbindTopicKnowledgeRes struct{}
+
+type AdminToggleTopicKnowledgeReq struct {
+	g.Meta  `path:"/admin/topic-knowledge-bindings/{id}/toggle" method:"put" tags:"V1/Admin" sm:"toggle topic-knowledge binding"`
+	Id      int  `json:"id" p:"id"`
+	Enabled bool `json:"enabled"`
+}
+
+type AdminToggleTopicKnowledgeRes struct {
+	Enabled bool `json:"enabled"`
+}
+
+type AdminUpdateDocumentVersionReq struct {
+	g.Meta        `path:"/admin/documents/{id}/version" method:"put" tags:"V1/Admin" sm:"update document version info"`
+	Id            int64  `json:"id" p:"id"`
+	EffectiveDate string `json:"effectiveDate" dc:"生效日期，格式 YYYY-MM-DD"`
+	RepealDate    string `json:"repealDate" dc:"废止日期，格式 YYYY-MM-DD"`
+	RepealedBy    string `json:"repealedBy" dc:"废止该文档的文档标题或ID"`
+	TitleGroup    string `json:"titleGroup" dc:"同名多版本分组键"`
+	Status        string `json:"status" dc:"文档状态：active/repealed/draft"`
+}
+
+type AdminUpdateDocumentVersionRes struct {
+	DocumentId int64 `json:"documentId"`
+}
+
+type AdminDocumentVersionsReq struct {
+	g.Meta     `path:"/admin/documents/versions" method:"get" tags:"V1/Admin" sm:"list document version groups"`
+	TitleGroup string `json:"titleGroup" p:"titleGroup" dc:"按同名分组键筛选"`
+}
+
+type AdminDocumentVersionsRes struct {
+	Groups []DocumentVersionGroup `json:"groups"`
+}
+
+type DocumentVersionGroup struct {
+	TitleGroup string                  `json:"titleGroup"`
+	Versions   []DocumentVersionDetail `json:"versions"`
+}
+
+type DocumentVersionDetail struct {
+	DocumentId    int64  `json:"documentId"`
+	Title         string `json:"title"`
+	Status        string `json:"status"`
+	EffectiveDate string `json:"effectiveDate,omitempty"`
+	RepealDate    string `json:"repealDate,omitempty"`
+	RepealedBy    string `json:"repealedBy,omitempty"`
+}
+
+type AdminDocumentRelationsReq struct {
+	g.Meta     `path:"/admin/document-relations" method:"get" tags:"V1/Admin" sm:"list document relations"`
+	DocumentId int64  `json:"documentId" p:"documentId" dc:"按文档ID筛选"`
+	RelType    string `json:"relType" p:"relType" dc:"按关联类型筛选：reference|supplement|repeal|related"`
+}
+
+type AdminDocumentRelationsRes struct {
+	List []DocumentRelationItem `json:"list"`
+}
+
+type DocumentRelationItem struct {
+	Id           int64  `json:"id"`
+	FromDocId    int64  `json:"fromDocId"`
+	FromDocTitle string `json:"fromDocTitle"`
+	ToDocId      int64  `json:"toDocId"`
+	ToDocTitle   string `json:"toDocTitle"`
+	RelType      string `json:"relType"`
+	Description  string `json:"description,omitempty"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type AdminCreateDocumentRelationReq struct {
+	g.Meta      `path:"/admin/document-relations" method:"post" tags:"V1/Admin" sm:"create document relation"`
+	FromDocId   int64  `json:"fromDocId" v:"required#来源文档ID不能为空"`
+	ToDocId     int64  `json:"toDocId" v:"required#目标文档ID不能为空"`
+	RelType     string `json:"relType" v:"required|in:reference,supplement,repeal,related#关联类型不能为空|关联类型须为reference/supplement/repeal/related"`
+	Description string `json:"description"`
+}
+
+type AdminCreateDocumentRelationRes struct {
+	Id int64 `json:"id"`
+}
+
+type AdminDeleteDocumentRelationReq struct {
+	g.Meta `path:"/admin/document-relations/{id}" method:"delete" tags:"V1/Admin" sm:"delete document relation"`
+	Id     int64 `json:"id" p:"id"`
+}
+
+type AdminDeleteDocumentRelationRes struct{}
+
+type AdminDocumentRecommendationsReq struct {
+	g.Meta     `path:"/admin/documents/{id}/recommendations" method:"get" tags:"V1/Admin" sm:"get related document recommendations"`
+	Id         int64 `json:"id" p:"id"`
+	TopN       int   `json:"topN" p:"topN" dc:"返回条数，默认5"`
+}
+
+type AdminDocumentRecommendationsRes struct {
+	List []DocumentRelationItem `json:"list"`
 }

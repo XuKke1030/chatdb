@@ -1,6 +1,9 @@
 package ai_chat
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 // 业务阈值常量
 const (
@@ -135,17 +138,57 @@ var kindInsightTemplates = map[fastPathKind]insightTemplate{
 		impacts:     []string{"类型分布可辅助精准配置执法资源"},
 		suggestions: []string{"建议对高发类型加强前端预防和巡查"},
 	},
+	fpTrafficDwellTop: {
+		keyPoints:   []string{"驻留时长最长的车辆为{top_plate}，停留{dwell_hours}小时"},
+		impacts:     []string{"长时间驻留可能涉及非法营运或走私风险"},
+		suggestions: []string{"建议调取该车辆轨迹进行深度分析"},
+	},
+	fpTrafficForeignOrigin: {
+		keyPoints:   []string{"外地车来源排名首位为{top_province}，共{top_count}辆"},
+		impacts:     []string{"来源集中度高，可聚焦重点省份布控"},
+		suggestions: []string{"建议关注Top3来源地的车辆类型与停留时长"},
+	},
+	fpTrafficHkMacauStay: {
+		keyPoints:   []string{"港澳车停留{bucket}时段占比最高", "平均停留{avgStay}分钟"},
+		impacts:     []string{"港澳车停留时长影响口岸区域资源占用"},
+		suggestions: []string{"建议根据停留时长分布优化口岸周边停车位配置"},
+	},
+	fpPopHolidayCompare: {
+		keyPoints:   []string{"节假日日均{holiday_avg}人，平日日均{workday_avg}人"},
+		impacts:     []string{"节假日人流变化{change_pct}，{direction}方向显著"},
+		suggestions: []string{"建议根据节假日增幅调配安保资源"},
+	},
+	fpPopYoY: {
+		keyPoints:   []string{"今年日均{current_val}人，去年同期{prior_val}人"},
+		impacts:     []string{"同比变化{change_pct}，{direction}趋势明显"},
+		suggestions: []string{"结合政策变化分析同比增长驱动因素"},
+	},
+	fpPopMultiRegionCompare: {
+		keyPoints:   []string{"人流最密集区域为{top_region}，日均{top_val}人"},
+		impacts:     []string{"区域间差异达{max_diff}人，资源分配需差异化"},
+		suggestions: []string{"建议在Top区域加强人流监控和应急部署"},
+	},
+	fpPopFloatingAnomaly: {
+		keyPoints:   []string{"流动人口异常区域{anomaly_count}个，增幅最大为{top_region}({top_pct}%)"},
+		impacts:     []string{"异常增长可能关联治安或流动人口管理风险"},
+		suggestions: []string{"建议对增幅超20%区域启动专项排查"},
+	},
+	fpGridOverview: {
+		keyPoints:   []string{"本月案件总量{total_cases}件，结案率{close_rate}%"},
+		impacts:     []string{"结案率{close_rate_direction}，处置效率{efficiency_direction}"},
+		suggestions: []string{"建议对未结案件加快督办，复盘高发原因"},
+	},
 }
 
 // buildKindInsight 按 kind 模板和结论文本生成数据化洞察条目
 // 当 kind 无模板时，降级到 topic 级通用洞察
-func buildKindInsight(fp *fastPath, conclusion string) (keyPoints, impacts, suggestions []string) {
+func buildKindInsight(ctx context.Context, fp *fastPath, conclusion string) (keyPoints, impacts, suggestions []string) {
 	tmpl, ok := kindInsightTemplates[fp.kind]
 	if !ok {
 		return buildInsightItems(fp, conclusion)
 	}
 
-	data := extractInsightData(fp.kind, conclusion)
+	data := extractInsightData(ctx, fp.kind, conclusion)
 
 	keyPoints = renderTemplateItems(tmpl.keyPoints, data)
 	impacts = renderTemplateItems(tmpl.impacts, data)

@@ -36,14 +36,41 @@ func (c *ControllerV1) KnowledgeBases(ctx context.Context, req *v1.KnowledgeBase
 		return nil, err
 	}
 
+	topicBindings := make(map[string]bool)
+	if req.Topic != "" {
+		bindings, _ := g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).
+			Fields("knowledge_code").Where("topic = ? AND enabled = 1", req.Topic).All()
+		for _, b := range bindings {
+			topicBindings[b["knowledge_code"].String()] = true
+		}
+	}
+
 	adminScoped, adminHasPerm, adminEnabled, qaAllowed := batchKnowledgePermissions(ctx, userId)
 
+	docCounts := make(map[string]int)
+	countRecords, _ := g.DB("master").Model("qa_document").Ctx(ctx).
+		Fields("knowledge_code, COUNT(1) AS cnt").
+		Where("enabled = ?", 1).
+		Group("knowledge_code").
+		All()
+	for _, r := range countRecords {
+		docCounts[r["knowledge_code"].String()] = r["cnt"].Int()
+	}
+
+	hasAnyEnabled := false
 	list := make([]v1.KnowledgeBaseItem, 0, len(records))
 	for _, record := range records {
 		code := record["code"].String()
 		if !checkKnowledgeAccess(code, adminScoped, adminHasPerm, adminEnabled, qaAllowed) {
 			continue
 		}
+		if req.Topic != "" && !topicBindings[code] {
+			continue
+		}
+		if req.DocType != "" && record["doc_type"].String() != req.DocType {
+			continue
+		}
+		hasAnyEnabled = true
 		list = append(list, v1.KnowledgeBaseItem{
 			Code:           code,
 			Name:           record["name"].String(),
@@ -52,9 +79,27 @@ func (c *ControllerV1) KnowledgeBases(ctx context.Context, req *v1.KnowledgeBase
 			SourceProvider: record["source_provider"].String(),
 			ExternalId:     record["external_id"].String(),
 			UpdateTime:     record["update_time"].Int(),
+			DocumentCount:  docCounts[code],
+			DocType:        record["doc_type"].String(),
 		})
 	}
-	return &v1.KnowledgeBasesRes{List: list}, nil
+
+	if len(list) > 0 {
+		list[0].IsDefault = true
+	}
+
+	var emptyReason string
+	if len(list) == 0 {
+		if !hasAnyEnabled && userId <= 0 {
+			emptyReason = "请登录后访问知识库"
+		} else if req.Topic != "" {
+			emptyReason = "当前主题暂无可用知识库，请联系管理员配置"
+		} else {
+			emptyReason = "暂无可用知识库，请联系管理员"
+		}
+	}
+
+	return &v1.KnowledgeBasesRes{List: list, EmptyReason: emptyReason}, nil
 }
 
 func (c *ControllerV1) Retrieve(ctx context.Context, req *v1.RetrieveReq) (res *v1.RetrieveRes, err error) {
@@ -73,7 +118,7 @@ func (c *ControllerV1) Retrieve(ctx context.Context, req *v1.RetrieveReq) (res *
 	if topK > 20 {
 		topK = 20
 	}
-	items, err := retrieveQaItems(ctx, userId, question, strings.TrimSpace(req.KnowledgeCode), topK)
+	items, err := retrieveQaItemsFiltered(ctx, userId, question, strings.TrimSpace(req.KnowledgeCode), topK, req.ActiveOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +151,7 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 		topK = 20
 	}
 	knowledgeCode := strings.TrimSpace(req.KnowledgeCode)
-	items, err := retrieveQaItems(ctx, userId, message, knowledgeCode, topK)
+	items, err := retrieveQaItemsFiltered(ctx, userId, message, knowledgeCode, topK, true, strings.TrimSpace(req.Topic))
 	if err != nil {
 		return nil, err
 	}
@@ -252,8 +297,76 @@ func (c *ControllerV1) DocumentView(ctx context.Context, req *v1.DocumentViewReq
 		SourceProvider: document["source_provider"].String(),
 		ExternalId:     document["external_id"].String(),
 		Status:         document["status"].String(),
+		EffectiveDate:  document["effective_date"].String(),
+		RepealDate:     document["repeal_date"].String(),
+		RepealedBy:     document["repealed_by"].String(),
+		Versions:       loadDocumentVersions(ctx, document),
+		RelatedDocs:    loadRelatedDocs(ctx, req.DocumentId),
 		Segments:       items,
 	}, nil
+}
+
+func loadDocumentVersions(ctx context.Context, document gdb.Record) []v1.DocumentVersionItem {
+	titleGroup := document["title_group"].String()
+	if titleGroup == "" {
+		return nil
+	}
+	records, err := g.DB("master").Model("qa_document").Ctx(ctx).
+		Fields("id, title, status, effective_date, repeal_date").
+		Where("title_group = ?", titleGroup).
+		OrderAsc("effective_date").All()
+	if err != nil || len(records) == 0 {
+		return nil
+	}
+	currentId := document["id"].Int64()
+	items := make([]v1.DocumentVersionItem, 0, len(records))
+	for _, r := range records {
+		items = append(items, v1.DocumentVersionItem{
+			DocumentId:    r["id"].Int64(),
+			Title:         r["title"].String(),
+			Status:        r["status"].String(),
+			EffectiveDate: r["effective_date"].String(),
+			RepealDate:    r["repeal_date"].String(),
+			IsCurrent:     r["id"].Int64() == currentId,
+		})
+	}
+	return items
+}
+
+func loadRelatedDocs(ctx context.Context, documentId int64) []v1.RelatedDocItem {
+	records, err := g.DB("master").Model("qa_document_relation r").Ctx(ctx).
+		Fields("r.to_doc_id, r.rel_type, d.title").
+		LeftJoin("qa_document d", "d.id = r.to_doc_id AND d.status = 'active'").
+		Where("r.from_doc_id = ? AND r.enabled = 1", documentId).
+		OrderAsc("r.rel_type").
+		Limit(10).
+		All()
+	if err != nil || len(records) == 0 {
+		// Also check reverse direction
+		records2, err2 := g.DB("master").Model("qa_document_relation r").Ctx(ctx).
+			Fields("r.from_doc_id AS to_doc_id, r.rel_type, d.title").
+			LeftJoin("qa_document d", "d.id = r.from_doc_id AND d.status = 'active'").
+			Where("r.to_doc_id = ? AND r.enabled = 1", documentId).
+			OrderAsc("r.rel_type").
+			Limit(10).
+			All()
+		if err2 != nil || len(records2) == 0 {
+			return nil
+		}
+		records = records2
+	}
+	items := make([]v1.RelatedDocItem, 0, len(records))
+	for _, r := range records {
+		if r["title"].String() == "" {
+			continue
+		}
+		items = append(items, v1.RelatedDocItem{
+			DocumentId: r["to_doc_id"].Int64(),
+			Title:      r["title"].String(),
+			RelType:    r["rel_type"].String(),
+		})
+	}
+	return items
 }
 
 func (c *ControllerV1) PopularQuestions(ctx context.Context, req *v1.PopularQuestionsReq) (res *v1.PopularQuestionsRes, err error) {
@@ -699,14 +812,18 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 	}
 }
 
-func retrieveQaItems(ctx context.Context, userId int64, question string, knowledgeCode string, topK int) ([]v1.RetrieveItem, error) {
+func retrieveQaItems(ctx context.Context, userId int64, question string, knowledgeCode string, topK int, topic ...string) ([]v1.RetrieveItem, error) {
+	return retrieveQaItemsFiltered(ctx, userId, question, knowledgeCode, topK, true, topic...)
+}
+
+func retrieveQaItemsFiltered(ctx context.Context, userId int64, question string, knowledgeCode string, topK int, activeOnly bool, topic ...string) ([]v1.RetrieveItem, error) {
 	if topK <= 0 {
 		topK = 5
 	}
 	if topK > 20 {
 		topK = 20
 	}
-	knowledgeCodes, err := accessibleKnowledgeCodes(ctx, userId, knowledgeCode)
+	knowledgeCodes, err := accessibleKnowledgeCodes(ctx, userId, knowledgeCode, topic...)
 	if err != nil {
 		return nil, err
 	}
@@ -716,9 +833,9 @@ func retrieveQaItems(ctx context.Context, userId int64, question string, knowled
 
 	terms := retrieveTerms(question)
 	sqlTerms := retrieveSQLTerms(question, terms)
-	records, err := queryQaRetrieveRecords(ctx, userId, knowledgeCodes, sqlTerms)
+	records, err := queryQaRetrieveRecords(ctx, userId, knowledgeCodes, sqlTerms, activeOnly)
 	if err == nil && len(records) == 0 && len(sqlTerms) > 0 {
-		records, err = queryQaRetrieveRecords(ctx, userId, knowledgeCodes, nil)
+		records, err = queryQaRetrieveRecords(ctx, userId, knowledgeCodes, nil, activeOnly)
 	}
 	if err != nil {
 		return nil, err
@@ -747,6 +864,8 @@ func retrieveQaItems(ctx context.Context, userId int64, question string, knowled
 			Page:          record["page"].Int(),
 			Anchor:        record["anchor"].String(),
 			Score:         score,
+			EffectiveDate: record["effective_date"].String(),
+			Status:        record["doc_status"].String(),
 		})
 	}
 
@@ -759,7 +878,7 @@ func retrieveQaItems(ctx context.Context, userId int64, question string, knowled
 	return items, nil
 }
 
-func queryQaRetrieveRecords(ctx context.Context, userId int64, knowledgeCodes []string, sqlTerms []string) (gdb.Result, error) {
+func queryQaRetrieveRecords(ctx context.Context, userId int64, knowledgeCodes []string, sqlTerms []string, activeOnly bool) (gdb.Result, error) {
 	args := make([]any, 0, 1+len(knowledgeCodes)+len(sqlTerms)*2)
 	args = append(args, userId)
 	args = append(args, convertToAnySlice(knowledgeCodes)...)
@@ -775,18 +894,24 @@ func queryQaRetrieveRecords(ctx context.Context, userId int64, knowledgeCodes []
 		keywordClause = " AND (" + strings.Join(likeParts, " OR ") + ")"
 	}
 
+	statusClause := "AND d.status = 'active'"
+	if !activeOnly {
+		statusClause = "AND d.status <> 'deleted'"
+	}
+
 	return g.DB("master").Ctx(ctx).Raw(fmt.Sprintf(`
 		SELECT DISTINCT s.id AS segment_id, s.knowledge_code, s.document_id,
 		       s.content, s.page, s.anchor,
-		       d.title AS document_title, d.file_name
+		       d.title AS document_title, d.file_name,
+		       d.effective_date, d.status AS doc_status
 		FROM qa_document_segment s
-		INNER JOIN qa_document d ON d.id = s.document_id AND d.status = 'active'
+		INNER JOIN qa_document d ON d.id = s.document_id %s
 		INNER JOIN qa_document_permission dp ON dp.document_id = s.document_id
 		                                      AND dp.enabled = 1
 		                                      AND dp.user_id IN (?, 0)
 		WHERE s.knowledge_code IN (%s)%s
 		ORDER BY s.id DESC
-		LIMIT 500`, inPlaceholders(len(knowledgeCodes)), keywordClause),
+		LIMIT 500`, statusClause, inPlaceholders(len(knowledgeCodes)), keywordClause),
 		args...,
 	).All()
 }
@@ -846,7 +971,7 @@ func buildQaMessages(question string, history []model.ChatHistoryItem, items []v
 	if webBuilder.Len() == 0 {
 		webBuilder.WriteString("未提供可用联网搜索结果。\n")
 	}
-	systemPrompt := "你是问答端知识库助手。回答必须基于已提供的知识库片段；如果片段不足以回答，请明确说明未在当前知识库中找到依据。回答中涉及事实、制度、流程时使用 [引用1] 这样的格式标注来源。不要编造外部材料；当前阶段不调用 AIDGP。"
+	systemPrompt := "你是问答端知识库助手，服务移动端业务用户。回答必须基于已提供的知识库片段；如果片段不足以回答，请明确说明未在当前知识库中找到依据，并建议用户调整问题或换一个知识库继续追问。回答中涉及事实、制度、流程时使用 [引用1] 这样的格式标注来源。不要编造外部材料；当前阶段不调用 AIDGP。\n\n回答结构：\n1. 核心结论：用一句话直接回答用户问题。\n2. 关键依据：列出最重要的 2-3 条片段要点，标注引用编号。\n3. 补充说明：如果有适用范围、例外情况、生效日期或与其他制度的关系，需补充。\n4. 后续建议：给出 1-2 个可继续追问的方向。\n\n表达要求：\n- 不输出 SQL、表名、字段名。\n- 不编造不存在的数据或材料。\n- 如果查询结果为空，说明当前知识库中未找到与该问题相关的片段，并建议用户调整问题。\n- 数字必须带单位，百分比保留 1 位小数。\n- 排名结果最多展示 5 条。"
 	if deepThinking {
 		systemPrompt += " 已开启深度思考：请先在内部梳理问题、检索依据、适用范围和不确定点，再输出清晰结论；不要输出冗长推理链，只输出可核验的依据和结论。"
 	}
@@ -1454,8 +1579,21 @@ func normalizeQaKnowledgeCode(code string) string {
 	}
 }
 
-func accessibleKnowledgeCodes(ctx context.Context, userId int64, requested string) ([]string, error) {
+func accessibleKnowledgeCodes(ctx context.Context, userId int64, requested string, topic ...string) ([]string, error) {
 	requestedSet := requestedKnowledgeCodeSet(requested)
+
+	topicBindings := make(map[string]bool)
+	topicVal := ""
+	if len(topic) > 0 {
+		topicVal = topic[0]
+	}
+	if topicVal != "" {
+		bindings, _ := g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).
+			Fields("knowledge_code").Where("topic = ? AND enabled = 1", topicVal).All()
+		for _, b := range bindings {
+			topicBindings[b["knowledge_code"].String()] = true
+		}
+	}
 
 	// 1. Get all enabled knowledge base codes
 	records, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
@@ -1470,6 +1608,9 @@ func accessibleKnowledgeCodes(ctx context.Context, userId int64, requested strin
 	for _, record := range records {
 		code := record["code"].String()
 		if len(requestedSet) > 0 && !requestedSet[code] {
+			continue
+		}
+		if topicVal != "" && !topicBindings[code] {
 			continue
 		}
 		allCodes = append(allCodes, code)
@@ -1725,6 +1866,11 @@ func CreateQaTables(ctx context.Context, db gdb.DB) error {
 		{"qa_sync_task", "ADD COLUMN skipped_count INT NOT NULL DEFAULT 0"},
 		{"qa_sync_task", "ADD COLUMN started_at INT NOT NULL DEFAULT 0"},
 		{"qa_sync_task", "ADD COLUMN finished_at INT NOT NULL DEFAULT 0"},
+		{"qa_knowledge_base", "ADD COLUMN doc_type VARCHAR(32) NOT NULL DEFAULT 'policy'"},
+		{"qa_document", "ADD COLUMN effective_date VARCHAR(32)"},
+		{"qa_document", "ADD COLUMN repeal_date VARCHAR(32)"},
+		{"qa_document", "ADD COLUMN repealed_by VARCHAR(255)"},
+		{"qa_document", "ADD COLUMN title_group VARCHAR(255)"},
 	}
 	for _, item := range migrations {
 		if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s %s", item.table, item.sql)); err != nil {
@@ -1744,8 +1890,11 @@ func SeedQaTables(ctx context.Context, db gdb.DB) error {
 	}
 	now := int(gtime.Timestamp())
 	bases := []g.Map{
-		{"code": "policy", "name": "政策制度库", "description": "本地政策、制度、规范类文档知识库", "sort": 10},
-		{"code": "manual", "name": "业务手册库", "description": "本地业务流程、操作手册类文档知识库", "sort": 20},
+		{"code": "policy", "name": "政策制度库", "description": "本地政策、制度、规范类文档知识库", "sort": 10, "docType": "policy"},
+		{"code": "manual", "name": "业务手册库", "description": "本地业务流程、操作手册类文档知识库", "sort": 20, "docType": "manual"},
+		{"code": "form", "name": "表单模板库", "description": "本地常用表单、申请模板类文档知识库", "sort": 30, "docType": "form"},
+		{"code": "rule", "name": "规则标准库", "description": "本地行业标准、技术规范类文档知识库", "sort": 40, "docType": "rule"},
+		{"code": "case", "name": "案例汇编库", "description": "本地典型案例、经验总结类文档知识库", "sort": 50, "docType": "case"},
 	}
 	if count == 0 {
 		for _, item := range bases {
@@ -1755,6 +1904,7 @@ func SeedQaTables(ctx context.Context, db gdb.DB) error {
 				"description":     item["description"],
 				"enabled":         1,
 				"sort":            item["sort"],
+				"doc_type":        item["docType"],
 				"source_provider": "local",
 				"external_id":     "",
 				"sync_version":    "",
@@ -1785,6 +1935,9 @@ func seedQaDemoDocuments(ctx context.Context, db gdb.DB, now int) error {
 		return err
 	}
 	if count > 0 {
+		// Backfill doc_type for existing rows
+	db.Exec(ctx, "UPDATE qa_knowledge_base SET doc_type='policy' WHERE code='policy' AND (doc_type IS NULL OR doc_type='')")
+	db.Exec(ctx, "UPDATE qa_knowledge_base SET doc_type='manual' WHERE code='manual' AND (doc_type IS NULL OR doc_type='')")
 		return nil
 	}
 	docs := []struct {
@@ -1864,7 +2017,8 @@ func mysqlQaTableSQL() []string {
 code VARCHAR(64) PRIMARY KEY,
 name VARCHAR(128) NOT NULL,
 description TEXT,
-enabled TINYINT NOT NULL DEFAULT 1,
+	doc_type VARCHAR(32) NOT NULL DEFAULT 'policy',
+	enabled TINYINT NOT NULL DEFAULT 1,
 sort INT NOT NULL DEFAULT 0,
 source_provider VARCHAR(32) NOT NULL DEFAULT 'local',
 external_id VARCHAR(128),
@@ -1873,7 +2027,8 @@ last_sync_time INT NOT NULL DEFAULT 0,
 permission_hash VARCHAR(128),
 create_time INT NOT NULL,
 update_time INT NOT NULL,
-INDEX idx_source_external (source_provider, external_id)
+INDEX idx_source_external (source_provider, external_id),
+INDEX idx_doc_type (doc_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS qa_knowledge_base_permission (
 id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1894,10 +2049,16 @@ file_type VARCHAR(32),
 source_provider VARCHAR(32) NOT NULL DEFAULT 'local',
 external_id VARCHAR(128),
 status VARCHAR(32) NOT NULL DEFAULT 'active',
+effective_date VARCHAR(32),
+repeal_date VARCHAR(32),
+repealed_by VARCHAR(255),
+title_group VARCHAR(255),
 create_time INT NOT NULL,
 update_time INT NOT NULL,
 INDEX idx_knowledge_status (knowledge_code, status),
-INDEX idx_source_external (source_provider, external_id)
+INDEX idx_source_external (source_provider, external_id),
+INDEX idx_title_group (title_group, status),
+INDEX idx_effective (effective_date, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS qa_document_segment (
 id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -1923,6 +2084,20 @@ create_time INT NOT NULL,
 update_time INT NOT NULL,
 UNIQUE KEY uk_qa_doc_user (document_id, user_id),
 INDEX idx_user_enabled (user_id, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS qa_document_relation (
+id BIGINT PRIMARY KEY AUTO_INCREMENT,
+from_doc_id BIGINT NOT NULL,
+to_doc_id BIGINT NOT NULL,
+rel_type VARCHAR(32) NOT NULL,
+description TEXT,
+enabled TINYINT NOT NULL DEFAULT 1,
+create_time INT NOT NULL,
+update_time INT NOT NULL,
+UNIQUE KEY uk_doc_rel (from_doc_id, to_doc_id, rel_type),
+INDEX idx_from_doc (from_doc_id, enabled),
+INDEX idx_to_doc (to_doc_id, enabled),
+INDEX idx_rel_type (rel_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS qa_session (
 session_id VARCHAR(64) PRIMARY KEY,

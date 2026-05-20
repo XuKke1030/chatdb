@@ -17,6 +17,8 @@ type (
 		RequestMetrics(r *ghttp.Request)
 		// HandlerResponse 处理 Http 请求返回结果
 		HandlerResponse(r *ghttp.Request)
+		// AdminJwtAuth 校验管理员jwt，无效则返回401
+		AdminJwtAuth(r *ghttp.Request)
 	}
 )
 

@@ -69,8 +69,8 @@ SUM(CASE WHEN r.in_dir = 1 THEN 1 ELSE 0 END) AS out_count,
 SUM(CASE WHEN r.is_hk_macau = 1 THEN 1 ELSE 0 END) AS hk_macau_count,
 SUM(CASE WHEN r.is_hk_macau = 0 THEN 1 ELSE 0 END) AS mainland_count,
 SUM(CASE WHEN r.plate_region_type <> '' AND r.plate_region_type NOT LIKE '%本地%' AND r.is_hk_macau = 0 THEN 1 ELSE 0 END) AS foreign_count,
-SUM(CASE WHEN LEFT(r.plate_normalized, 1) = '粤' AND r.is_hk_macau = 0 AND r.plate_region_type LIKE '%本地%' THEN 1 ELSE 0 END) AS province_inside_count,
-SUM(CASE WHEN r.is_hk_macau = 0 AND (LEFT(r.plate_normalized, 1) <> '粤' OR r.plate_region_type NOT LIKE '%本地%') THEN 1 ELSE 0 END) AS province_outside_count,
+SUM(CASE WHEN r.is_province_inside = 1 THEN 1 ELSE 0 END) AS province_inside_count,
+SUM(CASE WHEN r.is_hk_macau = 0 AND r.is_province_inside = 0 THEN 1 ELSE 0 END) AS province_outside_count,
 'aidgp' AS source_provider,
 UNIX_TIMESTAMP() AS update_time
 FROM traffic_gate_record r
@@ -104,8 +104,8 @@ SUM(CASE WHEN r.in_dir = 1 THEN 1 ELSE 0 END) AS out_count,
 SUM(CASE WHEN r.is_hk_macau = 1 THEN 1 ELSE 0 END) AS hk_macau_count,
 SUM(CASE WHEN r.is_hk_macau = 0 THEN 1 ELSE 0 END) AS mainland_count,
 SUM(CASE WHEN r.plate_region_type <> '' AND r.plate_region_type NOT LIKE '%本地%' AND r.is_hk_macau = 0 THEN 1 ELSE 0 END) AS foreign_count,
-SUM(CASE WHEN LEFT(r.plate_normalized, 1) = '粤' AND r.is_hk_macau = 0 AND r.plate_region_type LIKE '%本地%' THEN 1 ELSE 0 END) AS province_inside_count,
-SUM(CASE WHEN r.is_hk_macau = 0 AND (LEFT(r.plate_normalized, 1) <> '粤' OR r.plate_region_type NOT LIKE '%本地%') THEN 1 ELSE 0 END) AS province_outside_count,
+SUM(CASE WHEN r.is_province_inside = 1 THEN 1 ELSE 0 END) AS province_inside_count,
+SUM(CASE WHEN r.is_hk_macau = 0 AND r.is_province_inside = 0 THEN 1 ELSE 0 END) AS province_outside_count,
 COALESCE(h.is_holiday, 0) AS is_holiday,
 COALESCE(h.holiday_name, '') AS holiday_name,
 'aidgp' AS source_provider,
@@ -126,7 +126,7 @@ func (s *sTraffic) refreshTrafficStayDaily(ctx context.Context, from string, to 
 	_, err := db.Exec(ctx, `
 INSERT INTO traffic_vehicle_stay_daily (
 metric_date, plate_normalized, region, device_count, stay_minutes,
-first_seen_at, last_seen_at, source_provider, update_time
+is_hk_macau, first_seen_at, last_seen_at, source_provider, update_time
 )
 SELECT
 DATE(r.snapshot_time) AS metric_date,
@@ -134,6 +134,7 @@ r.plate_normalized,
 COALESCE(NULLIF(r.plate_region_type, ''), '') AS region,
 COUNT(DISTINCT r.device_id) AS device_count,
 TIMESTAMPDIFF(MINUTE, MIN(r.snapshot_time), MAX(r.snapshot_time)) AS stay_minutes,
+MAX(r.is_hk_macau) AS is_hk_macau,
 MIN(r.snapshot_time) AS first_seen_at,
 MAX(r.snapshot_time) AS last_seen_at,
 'aidgp' AS source_provider,
@@ -154,7 +155,7 @@ func (s *sTraffic) refreshStayDistributionDaily(ctx context.Context, from string
 	}
 	_, err := db.Exec(ctx, `
 INSERT INTO traffic_stay_distribution_daily (
-metric_date, region, bucket, vehicle_count, avg_stay_minutes,
+metric_date, region, bucket, is_hk_macau, vehicle_count, avg_stay_minutes,
 source_provider, update_time
 )
 SELECT
@@ -167,13 +168,14 @@ CASE
 	WHEN s.stay_minutes < 240 THEN '2-4h'
 	ELSE '4h+'
 END AS bucket,
+s.is_hk_macau,
 COUNT(*) AS vehicle_count,
 AVG(s.stay_minutes) AS avg_stay_minutes,
 'aidgp' AS source_provider,
 UNIX_TIMESTAMP() AS update_time
 FROM traffic_vehicle_stay_daily s
 WHERE s.metric_date >= ? AND s.metric_date <= ?
-GROUP BY s.metric_date, s.region, bucket`, dateFrom, dateTo)
+GROUP BY s.metric_date, s.region, bucket, s.is_hk_macau`, dateFrom, dateTo)
 	return err
 }
 

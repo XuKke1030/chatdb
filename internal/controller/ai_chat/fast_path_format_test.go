@@ -1,6 +1,7 @@
 package ai_chat
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -31,8 +32,9 @@ func TestMatchFastPathTrafficPriority(t *testing.T) {
 }
 
 func TestFormatFastPathAnswerSectionsAndChartRule(t *testing.T) {
+	ctx := context.Background()
 	ratioPath := &fastPath{kind: fpTrafficHkMacau, topic: "traffic"}
-	ratioAnswer := formatFastPathAnswer(ratioPath, "港澳车占比 10%。", "")
+	ratioAnswer := formatFastPathAnswer(ctx, ratioPath, "港澳车占比 10%。", "")
 	for _, section := range []string{"## 精准结论", "## 特征洞察", "## 洞察分析"} {
 		if !strings.Contains(ratioAnswer, section) {
 			t.Fatalf("expected section %s in answer", section)
@@ -41,7 +43,7 @@ func TestFormatFastPathAnswerSectionsAndChartRule(t *testing.T) {
 	if strings.Contains(ratioAnswer, "## 可视化") {
 		t.Fatalf("single ratio answer should not include visualization section")
 	}
-	ratioMeta := buildFastPathFormatMeta(ratioPath, "港澳车占比 10%。", "")
+	ratioMeta := buildFastPathFormatMeta(ctx, ratioPath, "港澳车占比 10%。", "")
 	if ratioMeta.ChartRule != "no_chart_single_value_or_ratio" {
 		t.Fatalf("expected no-chart rule, got %s", ratioMeta.ChartRule)
 	}
@@ -51,17 +53,18 @@ func TestFormatFastPathAnswerSectionsAndChartRule(t *testing.T) {
 
 	rankPath := &fastPath{kind: fpTrafficGateRank, topic: "traffic"}
 	rankChart := "```chatdb-chart\n{}\n```"
-	rankAnswer := formatFastPathAnswer(rankPath, "今日车流排名。", rankChart)
+	rankAnswer := formatFastPathAnswer(ctx, rankPath, "今日车流排名。", rankChart)
 	if !strings.Contains(rankAnswer, "## 可视化") {
 		t.Fatalf("rank answer should include visualization section")
 	}
-	rankMeta := buildFastPathFormatMeta(rankPath, "今日车流排名。", rankChart)
+	rankMeta := buildFastPathFormatMeta(ctx, rankPath, "今日车流排名。", rankChart)
 	if rankMeta.ChartRule != "bar_rank" {
 		t.Fatalf("expected bar_rank rule, got %s", rankMeta.ChartRule)
 	}
 }
 
 func TestBuildInsightMeta(t *testing.T) {
+	ctx := context.Background()
 	tests := []struct {
 		topic      string
 		kind       fastPathKind
@@ -76,7 +79,7 @@ func TestBuildInsightMeta(t *testing.T) {
 	}
 	for _, tc := range tests {
 		fp := &fastPath{topic: tc.topic, kind: tc.kind}
-		meta := buildInsightMeta(fp, tc.conclusion)
+		meta := buildInsightMeta(ctx, fp, tc.conclusion)
 		if meta == nil {
 			t.Fatalf("expected non-nil insightMeta for topic=%s kind=%v", tc.topic, tc.kind)
 		}
@@ -93,10 +96,9 @@ func TestBuildInsightMeta(t *testing.T) {
 }
 
 func TestConditionalInsightCollapse(t *testing.T) {
-	// Use a kind without a specific template → falls back to topic-level buildInsightItems
-	// fpTrafficForeignOrigin has no template entry, so it uses the generic topic path
+	ctx := context.Background()
 	noTemplateFP := &fastPath{topic: "traffic", kind: fpTrafficForeignOrigin}
-	noTemplateMeta := buildInsightMeta(noTemplateFP, "持平")
+	noTemplateMeta := buildInsightMeta(ctx, noTemplateFP, "持平")
 	if noTemplateMeta == nil {
 		t.Fatal("expected non-nil insightMeta for no-template kind")
 	}
@@ -107,9 +109,8 @@ func TestConditionalInsightCollapse(t *testing.T) {
 		}
 	}
 
-	// Kind with template + growth keyword → multiple items → should collapse
 	growthFP := &fastPath{topic: "traffic", kind: fpTrafficToday}
-	growthMeta := buildInsightMeta(growthFP, "今日车流总计 12500 辆，较昨日增长 15%")
+	growthMeta := buildInsightMeta(ctx, growthFP, "今日车流总计 12500 辆，较昨日增长 15%")
 	if growthMeta == nil {
 		t.Fatal("expected non-nil insightMeta for growth insight")
 	}
@@ -117,15 +118,15 @@ func TestConditionalInsightCollapse(t *testing.T) {
 		t.Fatal("growth insight with data should be collapsed")
 	}
 
-	// nil meta → should default to collapsed
 	if !shouldCollapseInsight(nil) {
 		t.Fatal("nil insightMeta should default to collapsed")
 	}
 }
 
 func TestInsightMetaInFormatMeta(t *testing.T) {
+	ctx := context.Background()
 	fp := &fastPath{kind: fpTrafficHkMacau, topic: "traffic"}
-	meta := buildFastPathFormatMeta(fp, "港澳车占比 10%。", "")
+	meta := buildFastPathFormatMeta(ctx, fp, "港澳车占比 10%。", "")
 	if meta.InsightMeta == nil {
 		t.Fatal("expected InsightMeta to be populated in format meta")
 	}
@@ -136,6 +137,7 @@ func TestInsightMetaInFormatMeta(t *testing.T) {
 
 // TestKindInsightQuality 验证每个有模板的 kind 至少产生 1 条洞察
 func TestKindInsightQuality(t *testing.T) {
+	ctx := context.Background()
 	conclusions := map[fastPathKind]string{
 		fpTrafficToday:           "今日车流总计 12500 辆，其中进入 6200 辆，离开 6300 辆。港澳车 1200 辆，占比 9.6%。",
 		fpTrafficTopGateToday:    "今日车流量最大的卡口为「皇岗口岸」，共 3500 辆。",
@@ -164,7 +166,7 @@ func TestKindInsightQuality(t *testing.T) {
 	for kind, conclusion := range conclusions {
 		t.Run(fastPathIntentName(kind), func(t *testing.T) {
 			fp := &fastPath{kind: kind, topic: kindTopic(kind)}
-			meta := buildInsightMeta(fp, conclusion)
+			meta := buildInsightMeta(ctx, fp, conclusion)
 			if meta == nil {
 				t.Fatalf("kind=%v: expected non-nil insightMeta", kind)
 			}
@@ -178,9 +180,10 @@ func TestKindInsightQuality(t *testing.T) {
 
 // TestInsightTextContainsNumbers 验证洞察文本包含实际数值
 func TestInsightTextContainsNumbers(t *testing.T) {
+	ctx := context.Background()
 	numRe := regexp.MustCompile(`\d+`)
 	fp := &fastPath{kind: fpTrafficToday, topic: "traffic"}
-	answer := formatFastPathAnswer(fp, "今日车流总计 12500 辆。", "")
+	answer := formatFastPathAnswer(ctx, fp, "今日车流总计 12500 辆。", "")
 	insightSection := strings.Split(answer, "## 洞察分析")
 	if len(insightSection) < 2 {
 		t.Fatal("expected 洞察分析 section in answer")

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-chat-sql/internal/logic/plate"
 	"ai-chat-sql/internal/model"
 )
 
@@ -142,9 +143,10 @@ func parseTimeField(m map[string]any, keys ...string) time.Time {
 
 func mapTrafficRecord(item map[string]any) (model.TrafficGateRecordInput, bool) {
 	snapshotTime := parseTimeField(item, "snapshotTime", "captureTime", "passTime", "metricTime", "time")
-	plate := stringFieldAny(item, "plateNormalized", "plateNo", "plate", "plateChar")
+	plateStr := stringFieldAny(item, "plateNormalized", "plateNo", "plate", "plateChar")
+	recognition := plate.RecognizePlateFull(plateStr)
 	deviceId := stringFieldAny(item, "deviceId", "gateId", "cameraId")
-	if snapshotTime.IsZero() || plate == "" || deviceId == "" {
+	if snapshotTime.IsZero() || plateStr == "" || deviceId == "" {
 		return model.TrafficGateRecordInput{}, false
 	}
 	raw := rawJSON(item)
@@ -152,8 +154,8 @@ func mapTrafficRecord(item map[string]any) (model.TrafficGateRecordInput, bool) 
 		DeviceId:         deviceId,
 		DeviceName:       stringFieldAny(item, "deviceName", "gateName", "cameraName"),
 		CameraIp:         stringFieldAny(item, "cameraIp", "ip"),
-		PlateChar:        plate,
-		PlateNormalized:  strings.ToUpper(plate),
+		PlateChar:        plateStr,
+		PlateNormalized:  recognition.Normalized,
 		PlateType:        stringFieldAny(item, "plateType"),
 		PlateColor:       stringFieldAny(item, "plateColor"),
 		VehicleType:      stringFieldAny(item, "vehicleType"),
@@ -172,9 +174,10 @@ func mapTrafficRecord(item map[string]any) (model.TrafficGateRecordInput, bool) 
 		PlatePicture:     stringFieldAny(item, "platePicture", "plateImage"),
 		PanoramaPicture:  stringFieldAny(item, "panoramaPicture", "sceneImage"),
 		VehiclePicture:   stringFieldAny(item, "vehiclePicture", "vehicleImage"),
-		PlateOrigin:      stringFieldAny(item, "plateOrigin", "originCity"),
-		PlateRegionType:  stringFieldAny(item, "plateRegionType", "regionType"),
-		IsHkMacau:        boolFieldAny(item, "isHkMacau", "hkMacau"),
+		PlateOrigin:      recognition.Origin,
+		PlateRegionType:  recognition.RegionType,
+		IsHkMacau:        recognition.IsHongKongMacau,
+		IsProvinceInside: recognition.IsProvinceInside,
 		RawPayload:       raw,
 		PayloadHash:      payloadHash(raw),
 	}, true

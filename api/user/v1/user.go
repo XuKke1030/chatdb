@@ -66,6 +66,8 @@ type UserBootstrapRes struct {
 	KnowledgeBases    []UserKnowledgePermission `json:"knowledgeBases"`
 	PopularQuestions  []UserPopularQuestionItem `json:"popularQuestions"`
 	AlertSummary      UserAlertSummary          `json:"alertSummary"`
+	WelcomeMessage    string                    `json:"welcomeMessage"`
+	WelcomeSubtext    string                    `json:"welcomeSubtext"`
 }
 
 type UserAlertSummary struct {

@@ -44,6 +44,13 @@ func refreshTrafficAggregates(ctx context.Context) SyncLog {
 	return SyncLog{Action: "traffic_aggregate_refresh", Status: "success", Message: "traffic aggregate tables refreshed"}
 }
 
+func refreshPopulationAggregates(ctx context.Context) SyncLog {
+	if err := service.Population().RefreshAggregates(ctx, "", ""); err != nil {
+		return SyncLog{Action: "population_aggregate_refresh", Status: "failed", Message: err.Error()}
+	}
+	return SyncLog{Action: "population_aggregate_refresh", Status: "success", Message: "population aggregate tables refreshed"}
+}
+
 func refreshGridMetrics(ctx context.Context) SyncLog {
 	if err := rebuildGridMetrics(ctx); err != nil {
 		return SyncLog{Action: "grid_metric_refresh", Status: "failed", Message: err.Error()}

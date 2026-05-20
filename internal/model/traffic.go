@@ -32,6 +32,7 @@ type TrafficGateRecordInput struct {
 	PlateOrigin      string
 	PlateRegionType  string
 	IsHkMacau        bool
+	IsProvinceInside bool
 	RawPayload       string
 	PayloadHash      string
 }

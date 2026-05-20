@@ -30,6 +30,7 @@ func (s *sTraffic) InitTables(ctx context.Context) error {
 			return err
 		}
 	}
+	go autoSyncHolidays(context.Background())
 	return s.ensureIngestStatus(ctx)
 }
 
@@ -78,6 +79,7 @@ func (s *sTraffic) SaveGateRecord(ctx context.Context, in model.TrafficGateRecor
 		"plate_origin":       in.PlateOrigin,
 		"plate_region_type":  in.PlateRegionType,
 		"is_hk_macau":        boolInt(in.IsHkMacau),
+		"is_province_inside": boolInt(in.IsProvinceInside),
 		"raw_payload":        in.RawPayload,
 		"payload_hash":       in.PayloadHash,
 		"create_time":        now,
@@ -310,6 +312,7 @@ car_year_brand VARCHAR(32),
 plate_origin VARCHAR(64),
 plate_region_type VARCHAR(32),
 is_hk_macau TINYINT(1) NOT NULL DEFAULT 0,
+	is_province_inside TINYINT(1) NOT NULL DEFAULT 0,
 raw_payload LONGTEXT,
 payload_hash VARCHAR(64),
 create_time INT NOT NULL,
@@ -318,6 +321,7 @@ INDEX idx_snapshot_time (snapshot_time),
 INDEX idx_device_time (device_id, snapshot_time),
 INDEX idx_plate_time (plate_normalized, snapshot_time),
 INDEX idx_hk_macau_time (is_hk_macau, snapshot_time),
+	INDEX idx_province_inside_time (is_province_inside, snapshot_time),
 UNIQUE KEY uk_record_dedupe (device_id, plate_normalized, snapshot_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
 

@@ -1,6 +1,7 @@
 package traffic
 
 import (
+	"ai-chat-sql/internal/logic/plate"
 	"ai-chat-sql/internal/model"
 	"context"
 	"fmt"
@@ -36,16 +37,28 @@ func (s *sTraffic) BatchVerify(ctx context.Context, sampleSize int) (*model.Veri
 	lowCount := 0
 	for _, r := range records {
 		plateChar := r["plate_char"].String()
-		rec := recognizePlate(plateChar)
+		pr := plate.RecognizePlateFull(plateChar)
 
-		report.ByType[rec.PlateType]++
-		report.ByConfidence[rec.Confidence]++
+		report.ByType[pr.PlateType]++
+		report.ByConfidence[pr.Confidence]++
 
-		if rec.Confidence == "low" || rec.Confidence == "medium" {
+		if pr.Confidence == "low" || pr.Confidence == "medium" {
 			report.LowConfidence = append(report.LowConfidence, model.VerifySampleItem{
 				PlateChar:  plateChar,
-				Normalized: rec.Normalized,
-				Recognized: rec,
+				Normalized: pr.Normalized,
+				Recognized: model.TrafficPlateRecognition{
+					Plate:            pr.Plate,
+					Normalized:       pr.Normalized,
+					Origin:           pr.Origin,
+					RegionType:       pr.RegionType,
+					IsHongKongMacau:  pr.IsHongKongMacau,
+					IsProvinceInside: pr.IsProvinceInside,
+					Province:         pr.Province,
+					City:             pr.City,
+					PlateType:        pr.PlateType,
+					Confidence:       pr.Confidence,
+					Basis:            pr.Basis,
+				},
 			})
 			lowCount++
 			if lowCount >= 200 {

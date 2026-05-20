@@ -12,7 +12,7 @@ type (
 		HandleRawPayload(ctx context.Context, topic string, raw []byte) error
 		RecognizePlate(ctx context.Context, plate string) model.TrafficPlateRecognition
 		Aggregate(ctx context.Context, query model.TrafficAggregateQuery) (*model.TrafficAggregateResult, error)
-		StayDistribution(ctx context.Context, dateFrom, dateTo, region string) ([]model.TrafficStayBucketItem, error)
+		StayDistribution(ctx context.Context, dateFrom, dateTo, region, isHkMacau string) ([]model.TrafficStayBucketItem, error)
 		OriginRank(ctx context.Context, dateFrom, dateTo string, topN int) ([]model.TrafficOriginRankItem, error)
 		YoYCompare(ctx context.Context, dateFrom, dateTo, groupBy string) ([]model.TrafficYoYCompareItem, error)
 		MoMCompare(ctx context.Context, dateFrom, dateTo, groupBy string) ([]model.TrafficYoYCompareItem, error)
@@ -24,6 +24,7 @@ type (
 		UpsertGateDevice(ctx context.Context, in model.TrafficGateDeviceInput) error
 		RefreshAggregates(ctx context.Context, dateFrom string, dateTo string) error
 		SyncHolidaysFromCode(ctx context.Context) error
+		FetchHolidaysFromAPI(ctx context.Context, year int) error
 		BatchVerify(ctx context.Context, sampleSize int) (*model.VerifyReport, error)
 		ExportLowConfidencePlates(ctx context.Context, sampleSize int) ([][]string, error)
 		WriteIngestLog(ctx context.Context, in model.TrafficIngestLogInput) error

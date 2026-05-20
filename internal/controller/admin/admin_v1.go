@@ -3,6 +3,7 @@ package admin
 import (
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/logic/aidgp"
+	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 	"bytes"
 	"context"
@@ -47,13 +48,32 @@ func (c *ControllerV1) AdminLogin(ctx context.Context, req *v1.AdminLoginReq) (r
 		return nil, gerror.New("绠＄悊鍛樿处鍙锋垨瀵嗙爜閿欒")
 	}
 	_ = insertAdminLog(ctx, "admin", req.Username, "管理员登录", "管理员登录后台管理平台", "success")
+	jwtOut, jwtErr := service.Jwt().GenToken(ctx, &model.JWTGenTokenInput{
+		Subject: consts.JwtSubjectAdmin,
+		Id:      int64(record["id"].Int()),
+	})
+	if jwtErr != nil {
+		return nil, jwtErr
+	}
 	return &v1.AdminLoginRes{
-		Token:    "admin-dev-token",
+		Token:    jwtOut.Token,
 		Username: req.Username,
 	}, nil
 }
 
 func (c *ControllerV1) AdminProfile(ctx context.Context, req *v1.AdminProfileReq) (res *v1.AdminProfileRes, err error) {
+	adminId := ctx.Value(model.UserGroup{})
+	if adminId != nil {
+		if id, ok := adminId.(int); ok && id > 0 {
+			record, dbErr := g.DB("master").Model("admin_account").Ctx(ctx).Where("id = ?", id).One()
+			if dbErr == nil && record != nil {
+				return &v1.AdminProfileRes{
+					Username: record["username"].String(),
+					Role:     record["role"].String(),
+				}, nil
+			}
+		}
+	}
 	return &v1.AdminProfileRes{Username: "admin", Role: "administrator"}, nil
 }
 
@@ -193,7 +213,7 @@ func (c *ControllerV1) AdminQuestionCandidates(ctx context.Context, req *v1.Admi
 	if req.Status != "" {
 		query = query.Where("status", req.Status)
 	}
-	records, err := query.OrderDesc("last_seen_at").All()
+	records, err := query.OrderDesc("count").OrderDesc("last_seen_at").All()
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +221,28 @@ func (c *ControllerV1) AdminQuestionCandidates(ctx context.Context, req *v1.Admi
 }
 
 func (c *ControllerV1) AdminApproveQuestionCandidate(ctx context.Context, req *v1.AdminApproveQuestionCandidateReq) (res *v1.AdminApproveQuestionCandidateRes, err error) {
-	return c.updateCandidateStatus(ctx, req.Id, "approved")
+	item, err := updateQuestionCandidateStatus(ctx, req.Id, "approved")
+	if err != nil {
+		return nil, err
+	}
+	// Auto-create example question from approved candidate
+	if item.Question != "" {
+		now := int(gtime.Timestamp())
+		existing, _ := g.DB("master").Model("admin_example_question").Ctx(ctx).
+			Where("topic = ? AND question = ?", item.Topic, item.Question).Count()
+		if existing == 0 {
+			_, _ = g.DB("master").Model("admin_example_question").Ctx(ctx).Data(g.Map{
+				"topic":       item.Topic,
+				"question":    item.Question,
+				"description": fmt.Sprintf("从用户提问自动沉淀（累计%d次）", item.Count),
+				"enabled":     1,
+				"sort":        0,
+				"create_time": now,
+				"update_time": now,
+			}).Insert()
+		}
+	}
+	return &v1.AdminApproveQuestionCandidateRes{Item: item}, nil
 }
 
 func (c *ControllerV1) AdminRejectQuestionCandidate(ctx context.Context, req *v1.AdminRejectQuestionCandidateReq) (res *v1.AdminRejectQuestionCandidateRes, err error) {
@@ -348,6 +389,33 @@ func (c *ControllerV1) AdminGridImportUpload(ctx context.Context, req *v1.AdminG
 			return nil, err
 		}
 	}
+	// Record imported case numbers for rollback lookup
+	caseNums := make([]string, 0, len(cases))
+	for _, item := range cases {
+		if item.CaseNumber != "" {
+			caseNums = append(caseNums, item.CaseNumber)
+		}
+	}
+	if len(caseNums) > 0 {
+		if _, err = tx.Model("admin_grid_import_error").Ctx(ctx).Data(g.Map{
+			"import_id": id,
+			"row_index": 0,
+			"reason":    "rollback_case_numbers",
+			"raw_data":  strings.Join(caseNums, ","),
+		}).Insert(); err != nil {
+			return nil, err
+		}
+	}
+	// Audit: upload action
+	if _, err = tx.Model("admin_grid_import_audit").Ctx(ctx).Data(g.Map{
+		"import_id":  id,
+		"action":     "upload",
+		"operator":   defaultString(req.Operator, "admin"),
+		"detail":     fmt.Sprintf("上传文件 %s，成功%d条，失败%d条", fileName, successRows, failedRows),
+		"create_time": now,
+	}).Insert(); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -406,7 +474,17 @@ func (c *ControllerV1) AdminRefreshTrafficAggregates(ctx context.Context, req *v
 	return &v1.AdminRefreshTrafficAggregatesRes{Ok: true}, nil
 }
 
+func (c *ControllerV1) AdminRefreshPopulationAggregates(ctx context.Context, req *v1.AdminRefreshPopulationAggregatesReq) (res *v1.AdminRefreshPopulationAggregatesRes, err error) {
+	if err := service.Population().RefreshAggregates(ctx, req.DateFrom, req.DateTo); err != nil {
+		return nil, err
+	}
+	return &v1.AdminRefreshPopulationAggregatesRes{Ok: true}, nil
+}
+
 func (c *ControllerV1) AdminSyncHoliday(ctx context.Context, req *v1.AdminSyncHolidayReq) (res *v1.AdminSyncHolidayRes, err error) {
+	year := time.Now().Year()
+	_ = service.Traffic().FetchHolidaysFromAPI(ctx, year)
+	_ = service.Traffic().FetchHolidaysFromAPI(ctx, year+1)
 	if err := service.Traffic().SyncHolidaysFromCode(ctx); err != nil {
 		return nil, err
 	}
@@ -488,7 +566,8 @@ func (c *ControllerV1) AdminSyncRetry(ctx context.Context, req *v1.AdminSyncRetr
 	if record == nil {
 		return nil, fmt.Errorf("sync task not found: %d", req.TaskId)
 	}
-	result, err := executeAdminAidgpSync(ctx, record["sync_type"].String(), "")
+	syncType := record["sync_type"].String()
+	result, err := executeAdminAidgpSyncWithScope(ctx, syncType, "")
 	if err != nil {
 		return nil, err
 	}
@@ -673,6 +752,16 @@ reason TEXT NOT NULL,
 raw_data LONGTEXT,
 INDEX idx_import_id (import_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS admin_grid_import_audit (
+	id INT PRIMARY KEY AUTO_INCREMENT,
+	import_id INT NOT NULL,
+	action VARCHAR(32) NOT NULL,
+	operator VARCHAR(64) NOT NULL DEFAULT '',
+	detail TEXT,
+	create_time INT NOT NULL,
+	INDEX idx_import_id (import_id),
+	INDEX idx_create_time (create_time)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS admin_knowledge_base (
 code VARCHAR(64) PRIMARY KEY,
 name VARCHAR(128) NOT NULL,
@@ -719,6 +808,34 @@ INDEX idx_case_number (case_number),
 INDEX idx_report_time (report_time),
 INDEX idx_case_type (case_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS metric_catalog (
+id BIGINT PRIMARY KEY AUTO_INCREMENT,
+topic VARCHAR(32) NOT NULL,
+metric_name VARCHAR(64) NOT NULL,
+display_name VARCHAR(128) NOT NULL,
+description VARCHAR(512) DEFAULT '',
+unit VARCHAR(32) DEFAULT '',
+dimensions JSON DEFAULT NULL,
+default_threshold DECIMAL(12,2) DEFAULT NULL,
+threshold_direction VARCHAR(16) DEFAULT 'above',
+related_fast_path INT DEFAULT NULL,
+chart_type_hint VARCHAR(16) DEFAULT 'line',
+is_active TINYINT(1) NOT NULL DEFAULT 1,
+create_time INT NOT NULL,
+update_time INT NOT NULL,
+UNIQUE KEY uk_topic_metric (topic, metric_name),
+INDEX idx_topic_active (topic, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS topic_knowledge_binding (
+	id INT PRIMARY KEY AUTO_INCREMENT,
+	topic VARCHAR(32) NOT NULL,
+	knowledge_code VARCHAR(64) NOT NULL,
+	enabled TINYINT NOT NULL DEFAULT 1,
+	create_time INT NOT NULL,
+	update_time INT NOT NULL,
+	UNIQUE KEY uk_topic_knowledge (topic, knowledge_code),
+	INDEX idx_topic (topic)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 }
 
@@ -779,6 +896,24 @@ func SeedAdminTables(ctx context.Context, db gdb.DB) error {
 		}
 		if count == 0 {
 			if _, err := db.Model("admin_knowledge_base").Ctx(ctx).Data(seed).Insert(); err != nil {
+				return err
+			}
+		}
+	}
+	// Seed topic-knowledge bindings
+	if count, err := db.Model("topic_knowledge_binding").Ctx(ctx).Count(); err == nil && count == 0 {
+		bindings := []g.Map{
+			{"topic": "grid", "knowledge_code": "policy", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "grid", "knowledge_code": "manual", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "grid", "knowledge_code": "form", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "grid", "knowledge_code": "case", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "traffic", "knowledge_code": "policy", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "traffic", "knowledge_code": "rule", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "population", "knowledge_code": "manual", "enabled": 1, "create_time": now, "update_time": now},
+			{"topic": "population", "knowledge_code": "form", "enabled": 1, "create_time": now, "update_time": now},
+		}
+		for _, b := range bindings {
+			if _, err := db.Model("topic_knowledge_binding").Ctx(ctx).Data(b).Insert(); err != nil {
 				return err
 			}
 		}
@@ -900,7 +1035,7 @@ func ensureDefaultKnowledgePermissions(ctx context.Context, userId int, ruleLeve
 	now := int(gtime.Timestamp())
 	for _, base := range bases {
 		code := base["code"].String()
-		allowed := enabled && (code == "policy" || (ruleLevel&7 == 7 && code == "manual"))
+		allowed := enabled && (code == "policy" || code == "form" || (ruleLevel&7 == 7 && (code == "manual" || code == "rule" || code == "case")))
 		if _, err := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Data(g.Map{
 			"user_id":        userId,
 			"knowledge_code": code,
@@ -958,6 +1093,7 @@ func knowledgeBaseOptions(ctx context.Context) []v1.KnowledgePermission {
 			Code:    base["code"].String(),
 			Name:    base["name"].String(),
 			Enabled: true,
+			DocType: base["doc_type"].String(),
 		})
 	}
 	return list
@@ -1170,6 +1306,15 @@ func gridImportFromRecord(record gdb.Record) v1.GridImportItem {
 }
 
 func executeAdminAidgpSync(ctx context.Context, syncType string, knowledgeCode string) (*v1.AdminSyncRes, error) {
+	// Check if the data source is enabled before running sync
+	sourceType := syncTypeToSourceType(syncType)
+	if sourceType != "" {
+		record, _ := g.DB("master").Model("admin_data_source").Ctx(ctx).Where("source_type = ?", sourceType).One()
+		if record != nil && record["enabled"].Int() == 0 {
+			return nil, gerror.Newf("数据源 %s 已关闭，请先启用后再同步", sourceType)
+		}
+	}
+
 	provider := adminSyncProvider()
 	now := int(gtime.Timestamp())
 	taskId, err := insertAdminSyncTask(ctx, provider, syncType, "running", "同步任务已开始")
@@ -1185,10 +1330,26 @@ func executeAdminAidgpSync(ctx context.Context, syncType string, knowledgeCode s
 		message = syncErr.Error()
 		result.FailureCount++
 		result.Logs = append(result.Logs, aidgp.SyncLog{Action: "execute", Status: "failed", Message: syncErr.Error()})
+		// Generate alert for sync failure
+		alertTopic := sourceType
+		if alertTopic == "" {
+			alertTopic = "system"
+		}
+		service.Alert().AddAlert(ctx, model.AlertItem{
+			Topic:      alertTopic,
+			Title:      fmt.Sprintf("%s数据同步失败", sourceType),
+			Content:    fmt.Sprintf("AIDGP %s 同步失败: %s", syncType, syncErr.Error()),
+			Question:   "",
+			Level:      "warning",
+			CreateTime: int(gtime.Timestamp()),
+		})
 	} else if result.FailureCount > 0 {
 		status = "partial_failed"
 	} else if result.SuccessCount == 0 && result.SkippedCount > 0 {
 		status = "skipped"
+	}
+	if syncType == aidgp.SyncKnowledgeBases && syncErr == nil {
+		disableOrphanedKnowledgeBases(ctx, result)
 	}
 	if err = insertAdminSyncLogs(ctx, taskId, provider, syncType, result.Logs); err != nil {
 		return nil, err
@@ -1196,6 +1357,109 @@ func executeAdminAidgpSync(ctx context.Context, syncType string, knowledgeCode s
 	finishedAt := int(gtime.Timestamp())
 	if err = finishAdminSyncTask(ctx, taskId, status, message, result.SuccessCount, result.FailureCount, result.SkippedCount, finishedAt); err != nil {
 		return nil, err
+	}
+	// Update admin_data_source latest_sync and status
+	if sourceType != "" {
+		dsStatus := "ready"
+		if status == "failed" || status == "partial_failed" {
+			dsStatus = "error"
+		}
+		_, _ = g.DB("master").Model("admin_data_source").Ctx(ctx).
+			Where("source_type = ?", sourceType).
+			Data(g.Map{
+				"latest_sync":  finishedAt,
+				"status":       dsStatus,
+				"update_time":  finishedAt,
+			}).Update()
+	}
+	return &v1.AdminSyncRes{
+		TaskId:       taskId,
+		Provider:     provider,
+		SyncType:     syncType,
+		Status:       status,
+		Message:      message,
+		SuccessCount: result.SuccessCount,
+		FailureCount: result.FailureCount,
+		SkippedCount: result.SkippedCount,
+		StartedAt:    now,
+		FinishedAt:   finishedAt,
+		CreateTime:   now,
+		UpdateTime:   finishedAt,
+	}, nil
+}
+
+func executeAdminAidgpSyncWithScope(ctx context.Context, syncType string, knowledgeCode string) (*v1.AdminSyncRes, error) {
+	sourceType := syncTypeToSourceType(syncType)
+	if sourceType != "" {
+		record, _ := g.DB("master").Model("admin_data_source").Ctx(ctx).Where("source_type = ?", sourceType).One()
+		if record != nil && record["enabled"].Int() == 0 {
+			return nil, gerror.Newf("数据源 %s 已关闭，请先启用后再同步", sourceType)
+		}
+	}
+
+	provider := adminSyncProvider()
+	now := int(gtime.Timestamp())
+	taskId, err := insertAdminSyncTask(ctx, provider, syncType, "running", "增量同步任务已开始")
+	if err != nil {
+		return nil, err
+	}
+	client := adminAidgpClient(provider)
+
+	scope := aidgp.SyncScope{KnowledgeCode: knowledgeCode}
+	if sourceType != "" {
+		dsRecord, _ := g.DB("master").Model("admin_data_source").Ctx(ctx).
+			Where("source_type = ?", sourceType).One()
+		if dsRecord != nil && dsRecord["latest_sync"].Int() > 0 {
+			scope.Since = time.Unix(int64(dsRecord["latest_sync"].Int()), 0).Format(time.RFC3339)
+		}
+	}
+
+	result, syncErr := callAdminAidgpSyncWithScope(ctx, client, syncType, scope)
+	status := "success"
+	message := result.Message
+	if syncErr != nil {
+		status = "failed"
+		message = syncErr.Error()
+		result.FailureCount++
+		result.Logs = append(result.Logs, aidgp.SyncLog{Action: "execute", Status: "failed", Message: syncErr.Error()})
+		alertTopic := sourceType
+		if alertTopic == "" {
+			alertTopic = "system"
+		}
+		service.Alert().AddAlert(ctx, model.AlertItem{
+			Topic:      alertTopic,
+			Title:      fmt.Sprintf("%s数据同步失败", sourceType),
+			Content:    fmt.Sprintf("AIDGP %s 同步失败: %s", syncType, syncErr.Error()),
+			Level:      "warning",
+			CreateTime: int(gtime.Timestamp()),
+		})
+	} else if result.FailureCount > 0 {
+		status = "partial_failed"
+	} else if result.SuccessCount == 0 && result.SkippedCount > 0 {
+		status = "skipped"
+	}
+	if syncType == aidgp.SyncKnowledgeBases && syncErr == nil {
+		disableOrphanedKnowledgeBases(ctx, result)
+	}
+	if err = insertAdminSyncLogs(ctx, taskId, provider, syncType, result.Logs); err != nil {
+		return nil, err
+	}
+	finishedAt := int(gtime.Timestamp())
+	if err = finishAdminSyncTask(ctx, taskId, status, message, result.SuccessCount, result.FailureCount, result.SkippedCount, finishedAt); err != nil {
+		return nil, err
+	}
+	if sourceType != "" {
+		dsStatus := "ready"
+		if status == "failed" || status == "partial_failed" {
+			dsStatus = "error"
+		}
+		_, _ = g.DB("master").Model("admin_data_source").Ctx(ctx).
+			Where("source_type = ?", sourceType).
+			Data(g.Map{
+				"latest_sync":  finishedAt,
+				"status":       dsStatus,
+				"update_time":  finishedAt,
+			}).Update()
 	}
 	return &v1.AdminSyncRes{
 		TaskId:       taskId,
@@ -1246,8 +1510,25 @@ func adminAidgpClient(provider string) aidgp.Client {
 	return aidgp.NewClient(cfg)
 }
 
+func syncTypeToSourceType(syncType string) string {
+	switch syncType {
+	case aidgp.SyncTrafficData:
+		return "traffic"
+	case aidgp.SyncPopulationData:
+		return "population"
+	case aidgp.SyncGridData:
+		return "grid"
+	default:
+		return ""
+	}
+}
+
 func callAdminAidgpSync(ctx context.Context, client aidgp.Client, syncType string, knowledgeCode string) (aidgp.SyncResult, error) {
 	scope := aidgp.SyncScope{KnowledgeCode: knowledgeCode}
+	return callAdminAidgpSyncWithScope(ctx, client, syncType, scope)
+}
+
+func callAdminAidgpSyncWithScope(ctx context.Context, client aidgp.Client, syncType string, scope aidgp.SyncScope) (aidgp.SyncResult, error) {
 	switch syncType {
 	case aidgp.SyncKnowledgeBases:
 		return client.SyncKnowledgeBases(ctx, scope)
@@ -1880,4 +2161,277 @@ func (c *ControllerV1) AdminCaseStatistics(ctx context.Context, req *v1.AdminCas
 			ByPending: byPending,
 		},
 	}, nil
+}
+
+func (c *ControllerV1) AdminTopicKnowledgeBindings(ctx context.Context, req *v1.AdminTopicKnowledgeBindingsReq) (res *v1.AdminTopicKnowledgeBindingsRes, err error) {
+	model := g.DB("master").Model("topic_knowledge_binding").Ctx(ctx)
+	if req.Topic != "" {
+		model = model.Where("topic = ?", req.Topic)
+	}
+	records, err := model.OrderAsc("topic").OrderAsc("knowledge_code").All()
+	if err != nil {
+		return nil, err
+	}
+	kbMap := make(map[string]string)
+	kbRecords, _ := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).Fields("code,name").All()
+	for _, r := range kbRecords {
+		kbMap[r["code"].String()] = r["name"].String()
+	}
+	list := make([]v1.TopicKnowledgeBindingItem, 0, len(records))
+	for _, r := range records {
+		code := r["knowledge_code"].String()
+		list = append(list, v1.TopicKnowledgeBindingItem{
+			Id:            r["id"].Int(),
+			Topic:         r["topic"].String(),
+			KnowledgeCode: code,
+			KnowledgeName: kbMap[code],
+			Enabled:       r["enabled"].Int() == 1,
+			CreateTime:    r["create_time"].Int(),
+			UpdateTime:    r["update_time"].Int(),
+		})
+	}
+	return &v1.AdminTopicKnowledgeBindingsRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminBindTopicKnowledge(ctx context.Context, req *v1.AdminBindTopicKnowledgeReq) (res *v1.AdminBindTopicKnowledgeRes, err error) {
+	now := int(gtime.Timestamp())
+	count, err := g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).
+		Where("topic = ? AND knowledge_code = ?", req.Topic, req.KnowledgeCode).Count()
+	if err != nil {
+		return nil, err
+	}
+	if count > 0 {
+		_, err = g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).
+			Where("topic = ? AND knowledge_code = ?", req.Topic, req.KnowledgeCode).
+			Data(g.Map{"enabled": 1, "update_time": now}).Update()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		_, err = g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).Data(g.Map{
+			"topic":          req.Topic,
+			"knowledge_code":  req.KnowledgeCode,
+			"enabled":        1,
+			"create_time":    now,
+			"update_time":    now,
+		}).Insert()
+		if err != nil {
+			return nil, err
+		}
+	}
+	bind, _ := g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).
+		Where("topic = ? AND knowledge_code = ?", req.Topic, req.KnowledgeCode).One()
+	kbMap := make(map[string]string)
+	kbRecords, _ := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).Fields("code,name").All()
+	for _, r := range kbRecords {
+		kbMap[r["code"].String()] = r["name"].String()
+	}
+	item := v1.TopicKnowledgeBindingItem{
+		Id:            bind["id"].Int(),
+		Topic:         req.Topic,
+		KnowledgeCode: req.KnowledgeCode,
+		KnowledgeName: kbMap[req.KnowledgeCode],
+		Enabled:       true,
+		CreateTime:    now,
+		UpdateTime:    now,
+	}
+	return &v1.AdminBindTopicKnowledgeRes{Item: item}, nil
+}
+
+func (c *ControllerV1) AdminUnbindTopicKnowledge(ctx context.Context, req *v1.AdminUnbindTopicKnowledgeReq) (res *v1.AdminUnbindTopicKnowledgeRes, err error) {
+	_, err = g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).Where("id = ?", req.Id).Delete()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminUnbindTopicKnowledgeRes{}, nil
+}
+
+func (c *ControllerV1) AdminToggleTopicKnowledge(ctx context.Context, req *v1.AdminToggleTopicKnowledgeReq) (res *v1.AdminToggleTopicKnowledgeRes, err error) {
+	now := int(gtime.Timestamp())
+	enabled := 0
+	if req.Enabled {
+		enabled = 1
+	}
+	_, err = g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).
+		Where("id = ?", req.Id).Data(g.Map{"enabled": enabled, "update_time": now}).Update()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminToggleTopicKnowledgeRes{Enabled: req.Enabled}, nil
+}
+
+func (c *ControllerV1) AdminUpdateDocumentVersion(ctx context.Context, req *v1.AdminUpdateDocumentVersionReq) (res *v1.AdminUpdateDocumentVersionRes, err error) {
+	now := int(gtime.Timestamp())
+	data := g.Map{"update_time": now}
+	if req.EffectiveDate != "" {
+		data["effective_date"] = req.EffectiveDate
+	}
+	if req.RepealDate != "" {
+		data["repeal_date"] = req.RepealDate
+	}
+	if req.RepealedBy != "" {
+		data["repealed_by"] = req.RepealedBy
+	}
+	if req.TitleGroup != "" {
+		data["title_group"] = req.TitleGroup
+	}
+	if req.Status != "" {
+		data["status"] = req.Status
+	}
+	_, err = g.DB("master").Model("qa_document").Ctx(ctx).
+		Where("id = ?", req.Id).Data(data).Update()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminUpdateDocumentVersionRes{DocumentId: req.Id}, nil
+}
+
+func (c *ControllerV1) AdminDocumentVersions(ctx context.Context, req *v1.AdminDocumentVersionsReq) (res *v1.AdminDocumentVersionsRes, err error) {
+	model := g.DB("master").Model("qa_document").Ctx(ctx).
+		Fields("id, title, status, effective_date, repeal_date, repealed_by, title_group").
+		Where("title_group IS NOT NULL AND title_group <> ''").
+		OrderAsc("title_group").OrderAsc("effective_date")
+	if req.TitleGroup != "" {
+		model = model.Where("title_group = ?", req.TitleGroup)
+	}
+	records, err := model.All()
+	if err != nil {
+		return nil, err
+	}
+	groupMap := make(map[string][]v1.DocumentVersionDetail)
+	order := make([]string, 0)
+	for _, r := range records {
+		tg := r["title_group"].String()
+		if _, ok := groupMap[tg]; !ok {
+			order = append(order, tg)
+		}
+		groupMap[tg] = append(groupMap[tg], v1.DocumentVersionDetail{
+			DocumentId:    r["id"].Int64(),
+			Title:         r["title"].String(),
+			Status:        r["status"].String(),
+			EffectiveDate: r["effective_date"].String(),
+			RepealDate:    r["repeal_date"].String(),
+			RepealedBy:    r["repealed_by"].String(),
+		})
+	}
+	groups := make([]v1.DocumentVersionGroup, 0, len(order))
+	for _, tg := range order {
+		groups = append(groups, v1.DocumentVersionGroup{
+			TitleGroup: tg,
+			Versions:   groupMap[tg],
+		})
+	}
+	return &v1.AdminDocumentVersionsRes{Groups: groups}, nil
+}
+
+func disableOrphanedKnowledgeBases(ctx context.Context, result aidgp.SyncResult) {
+	syncedCodes := make(map[string]bool)
+	for _, log := range result.Logs {
+		if log.LocalId != "" && (log.Status == "success" || log.Status == "skipped") {
+			syncedCodes[log.LocalId] = true
+		}
+	}
+	if len(syncedCodes) == 0 {
+		return
+	}
+	records, err := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
+		Fields("code").Where("source_provider = ?", "aidgp").All()
+	if err != nil {
+		return
+	}
+	now := int(gtime.Timestamp())
+	for _, r := range records {
+		code := r["code"].String()
+		if !syncedCodes[code] {
+			_, _ = g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
+				Where("code = ?", code).Data(g.Map{"enabled": 0, "update_time": now}).Update()
+		}
+	}
+}
+
+func (c *ControllerV1) AdminDocumentRelations(ctx context.Context, req *v1.AdminDocumentRelationsReq) (res *v1.AdminDocumentRelationsRes, err error) {
+	model := g.DB("master").Model("qa_document_relation r").Ctx(ctx).
+		Fields("r.id, r.from_doc_id, r.to_doc_id, r.rel_type, r.description, r.enabled, f.title AS from_title, t.title AS to_title").
+		LeftJoin("qa_document f", "f.id = r.from_doc_id").
+		LeftJoin("qa_document t", "t.id = r.to_doc_id").
+		OrderDesc("r.id")
+	if req.DocumentId > 0 {
+		model = model.Where("r.from_doc_id = ? OR r.to_doc_id = ?", req.DocumentId, req.DocumentId)
+	}
+	if req.RelType != "" {
+		model = model.Where("r.rel_type = ?", req.RelType)
+	}
+	records, err := model.All()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]v1.DocumentRelationItem, 0, len(records))
+	for _, r := range records {
+		list = append(list, v1.DocumentRelationItem{
+			Id:           r["id"].Int64(),
+			FromDocId:    r["from_doc_id"].Int64(),
+			FromDocTitle: r["from_title"].String(),
+			ToDocId:      r["to_doc_id"].Int64(),
+			ToDocTitle:   r["to_title"].String(),
+			RelType:      r["rel_type"].String(),
+			Description:  r["description"].String(),
+			Enabled:      r["enabled"].Int() == 1,
+		})
+	}
+	return &v1.AdminDocumentRelationsRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminCreateDocumentRelation(ctx context.Context, req *v1.AdminCreateDocumentRelationReq) (res *v1.AdminCreateDocumentRelationRes, err error) {
+	now := int(gtime.Timestamp())
+	result, err := g.DB("master").Model("qa_document_relation").Ctx(ctx).Data(g.Map{
+		"from_doc_id": req.FromDocId,
+		"to_doc_id":  req.ToDocId,
+		"rel_type":   req.RelType,
+		"description": req.Description,
+		"enabled":     1,
+		"create_time": now,
+		"update_time": now,
+	}).Insert()
+	if err != nil {
+		return nil, err
+	}
+	id, _ := result.LastInsertId()
+	return &v1.AdminCreateDocumentRelationRes{Id: id}, nil
+}
+
+func (c *ControllerV1) AdminDeleteDocumentRelation(ctx context.Context, req *v1.AdminDeleteDocumentRelationReq) (res *v1.AdminDeleteDocumentRelationRes, err error) {
+	_, err = g.DB("master").Model("qa_document_relation").Ctx(ctx).Where("id = ?", req.Id).Delete()
+	return nil, err
+}
+
+func (c *ControllerV1) AdminDocumentRecommendations(ctx context.Context, req *v1.AdminDocumentRecommendationsReq) (res *v1.AdminDocumentRecommendationsRes, err error) {
+	topN := req.TopN
+	if topN <= 0 {
+		topN = 5
+	}
+	records, err := g.DB("master").Model("qa_document_relation r").Ctx(ctx).
+		Fields("r.id, r.from_doc_id, r.to_doc_id, r.rel_type, r.description, r.enabled, f.title AS from_title, t.title AS to_title").
+		LeftJoin("qa_document f", "f.id = r.from_doc_id").
+		LeftJoin("qa_document t", "t.id = r.to_doc_id").
+		Where("(r.from_doc_id = ? OR r.to_doc_id = ?) AND r.enabled = 1", req.Id, req.Id).
+		OrderDesc("r.id").
+		Limit(topN).
+		All()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]v1.DocumentRelationItem, 0, len(records))
+	for _, r := range records {
+		list = append(list, v1.DocumentRelationItem{
+			Id:           r["id"].Int64(),
+			FromDocId:    r["from_doc_id"].Int64(),
+			FromDocTitle: r["from_title"].String(),
+			ToDocId:      r["to_doc_id"].Int64(),
+			ToDocTitle:   r["to_title"].String(),
+			RelType:      r["rel_type"].String(),
+			Description:  r["description"].String(),
+			Enabled:      r["enabled"].Int() == 1,
+		})
+	}
+	return &v1.AdminDocumentRecommendationsRes{List: list}, nil
 }
