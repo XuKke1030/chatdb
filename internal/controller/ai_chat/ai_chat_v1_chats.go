@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -14,7 +15,9 @@ import (
 	"ai-chat-sql/internal/logic/precipitate"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
+	"ai-chat-sql/utility"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
@@ -101,6 +104,10 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	if err != nil {
 		return nil, err
 	}
+	// Normalize: "context" is an alias for "history" (frontend compat)
+	if len(req.Context) > 0 && len(req.History) == 0 {
+		req.History = req.Context
+	}
 	req.History = mergeChatHistory(storedHistory, req.History)
 	logStage("history")
 	if err = appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "user", req.Message); err != nil {
@@ -116,15 +123,21 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	})
 
 	// Fast path: bypass AI SQL generation for high-frequency questions.
+	consts.Logger.Infof(ctx, "fast_path_debug topic=%q message=%q databaseId=%d sessionId=%q", req.Topic, req.Message, req.DatabaseId, req.SessionId)
 	if intent, ok := NewFastPathRouter().Match(req); ok {
+		consts.Logger.Infof(ctx, "fast_path_debug matched intent=%s hybrid=%v", intent.Intent, intent.Hybrid)
+		if intent.Hybrid {
+			return c.streamHybridFastPathAnswer(ctx, intent, req, userId, sessionId)
+		}
 		return c.streamFastPathIntentAnswer(ctx, intent, req, userId, sessionId)
 	}
+	consts.Logger.Infof(ctx, "fast_path_debug no match, falling through to LLM")
 
 	if req.Topic == "grid" && isMajorCaseQuestion(req.Message) {
 		return c.streamGridMajorCaseAnswer(ctx, req, userId, sessionId)
 	}
 
-	respChan := make(chan any)
+	respChan := make(chan any, 64)
 	g.Go(ctx, func(ctx context.Context) {
 		service.AiChat().Chat(ctx, req.ChatInput, respChan)
 	}, func(ctx context.Context, exception error) {
@@ -141,45 +154,63 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	var assistantBuilder strings.Builder
 	var isClarification bool
 	firstTokenLogged := false
-	for v := range respChan {
-		switch item := v.(type) {
-		case string:
-			r.Response.Writef("%s\n\n", item)
-		case error:
-			outData := model.GenChatOutDataItem(ctx, model.ChatOutDataItem{
-				Event: "error",
-				Data:  g.Map{"message": fmt.Sprintf("%s", item)},
-			})
-			if jsonData, err = json.Marshal(outData); err == nil {
-				r.Response.Writef("data: %s\n\n", jsonData)
-			}
-		default:
-			if out, ok := item.(model.ChatOutDataItem); ok {
-				if out.Event == "message" && out.Content != "" && (out.Role == "" || strings.EqualFold(out.Role, "assistant")) {
-					if !firstTokenLogged {
-						firstTokenLogged = true
-						consts.Logger.Infof(ctx, "perf ask_number stage=first_token topic=%s sessionId=%s totalMs=%d", req.Topic, sessionId, time.Since(totalStart).Milliseconds())
-					}
-					assistantBuilder.WriteString(out.Content)
-				}
-				if out.Event == "clarification" {
-					isClarification = true
-				}
-				if out.Event == "end" && assistantBuilder.Len() > 0 && !isClarification {
-					if saveErr := appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", assistantBuilder.String()); saveErr != nil {
-						consts.Logger.Errorf(ctx, "保存问数会话回复失败: %s", saveErr.Error())
-					}
-				}
-			}
-			jsonData, err = json.Marshal(item)
-			if err != nil {
+	for {
+		select {
+		case <-ctx.Done():
+			consts.Logger.Infof(ctx, "SSE client disconnected, aborting stream topic=%s sessionId=%s", req.Topic, sessionId)
+			return
+		case v, ok := <-respChan:
+			if !ok {
 				return
 			}
-			r.Response.Writef("data: %s\n\n", jsonData)
+			switch item := v.(type) {
+			case string:
+				r.Response.Writef("%s\n\n", item)
+			case error:
+				outData := model.GenChatOutDataItem(ctx, model.ChatOutDataItem{
+					Event: "error",
+					Data:  g.Map{"message": askNumberBusinessError(item)},
+				})
+				if jsonData, err = json.Marshal(outData); err == nil {
+					r.Response.Writef("data: %s\n\n", jsonData)
+				}
+			default:
+				if out, ok := item.(model.ChatOutDataItem); ok {
+					if out.Event == "message" && out.Content != "" && (out.Role == "" || strings.EqualFold(out.Role, "assistant")) {
+						if !firstTokenLogged {
+							firstTokenLogged = true
+							consts.Logger.Infof(ctx, "perf ask_number stage=first_token topic=%s sessionId=%s totalMs=%d", req.Topic, sessionId, time.Since(totalStart).Milliseconds())
+						}
+						assistantBuilder.WriteString(out.Content)
+					}
+					if out.Event == "clarification" {
+						isClarification = true
+					}
+					if out.Event == "end" && assistantBuilder.Len() > 0 && !isClarification {
+						if saveErr := appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", assistantBuilder.String()); saveErr != nil {
+							consts.Logger.Errorf(ctx, "保存问数会话回复失败: %s", saveErr.Error())
+						}
+					}
+				}
+				jsonData, err = json.Marshal(item)
+				if err != nil {
+					return
+				}
+				r.Response.Writef("data: %s\n\n", jsonData)
+				if out, ok := item.(model.ChatOutDataItem); ok && out.Event == "end" {
+					r.Response.Writef("data: [DONE]\n\n")
+					r.Response.Flush()
+					return
+				}
+			}
+			r.Response.Flush()
 		}
-		r.Response.Flush()
 	}
 	return
+}
+
+func askNumberBusinessError(err error) string {
+	return utility.SafeUserErr(err)
 }
 
 func (c *ControllerV1) ChatSessionCreate(ctx context.Context, req *v1.ChatSessionCreateReq) (res *v1.ChatSessionCreateRes, err error) {
@@ -314,7 +345,132 @@ func writeChatSSE(ctx context.Context, r *ghttp.Request, item model.ChatOutDataI
 		return
 	}
 	r.Response.Writef("data: %s\n\n", data)
+	if item.Event == "end" {
+		r.Response.Writef("data: [DONE]\n\n")
+	}
 	r.Response.Flush()
+}
+
+// streamHybridFastPathAnswer executes the fast path for data retrieval,
+// then hands the structured data to the LLM for natural language generation.
+func (c *ControllerV1) streamHybridFastPathAnswer(ctx context.Context, intent *FastPathIntent, req *v1.ChatReq, userId int, sessionId string) (*v1.ChatRes, error) {
+	// 1. Execute fast path to get data
+	queryStart := time.Now()
+	conclusion, chartData, err := executeFastPath(ctx, intent.legacy)
+	queryMs := time.Since(queryStart).Milliseconds()
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Build format metadata (chart type, sections, insight)
+	format := buildFastPathFormatMeta(ctx, intent.legacy, conclusion, chartData)
+
+	r := g.RequestFromCtx(ctx)
+	r.Response.Header().Set("Content-Type", "text/event-stream")
+	r.Response.Header().Set("Cache-Control", "no-cache")
+	r.Response.Header().Set("Connection", "keep-alive")
+
+	// 3. Send fast_path SSE event with chart data + format (frontend renders chart immediately)
+	sseData := g.Map{
+		"fastPath":   true,
+		"cacheHit":   false,
+		"intent":     intent.Intent,
+		"topic":      intent.Topic,
+		"queryMs":    queryMs,
+		"formatMs":   0,
+		"totalMs":    0,
+		"databaseId": intent.DatabaseId,
+		"format":     format,
+		"chartData":  chartData,
+		"allDates":   intent.Params["allDates"] != nil,
+		"hybrid":     true,
+	}
+	writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "start", Data: g.Map{"sessionId": sessionId}})
+	writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "fast_path", Data: sseData})
+
+	// 4. Build LLM prompt with data context
+	topicPromptContent := ""
+	if intent.Topic != "" {
+		topicPrompt, promptErr := service.Prompt().GetPrompt(ctx, intent.Topic)
+		if promptErr == nil && topicPrompt != nil {
+			topicPromptContent = topicPrompt.Content
+		}
+	}
+
+	dataContext := ""
+	if strings.TrimSpace(conclusion) != "" {
+		proportionHint := ""
+		if strings.Contains(conclusion, "各区域占比") || strings.Contains(conclusion, "占比：") {
+			proportionHint = "\n\n**重要**：数据中已列出各区域的占比，你必须在「精准结论」中逐一列出所有区域的占比数值，不要只写排名第一的区域，不要遗漏任何一个区域。"
+		}
+		dataContext = fmt.Sprintf("\n\n## 已查询数据\n以下是系统预先查询的结果，请基于此数据回答用户问题，不要重新查询：\n\n%s\n\n## 回答要求\n请基于以上数据，用自然流畅的中文回答用户问题。保留关键数字和占比，语言简洁专业。%s回答格式为：\n## 精准结论\n（简明扼要的结论，1-3句）\n\n## 特征洞察\n（关键数据特征，2-4条）\n\n不要提及「系统预先查询」等技术细节。如果数据中包含图表，图表已由系统自动渲染，你只需在「精准结论」和「特征洞察」中描述数据洞察即可。", conclusion, proportionHint)
+	}
+
+	messages := []*schema.Message{
+		{Role: schema.System, Content: topicPromptContent + dataContext},
+	}
+	for _, item := range req.History {
+		if item.Content == "" {
+			continue
+		}
+		role := schema.User
+		if item.Role == "assistant" {
+			role = schema.Assistant
+		}
+		messages = append(messages, &schema.Message{Role: role, Content: item.Content})
+	}
+	messages = append(messages, &schema.Message{Role: schema.User, Content: req.Message})
+
+	// 5. Call LLM (simple generate, no tools)
+	llm, err := service.AI().GetChatModel(req.Ai, req.Model)
+	if err != nil {
+		// Fallback: send the raw conclusion
+		writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "message", Role: "assistant", Content: conclusion})
+		writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "end", Data: g.Map{"sessionId": sessionId}})
+		_ = appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", conclusion)
+		return &v1.ChatRes{}, nil
+	}
+
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer timeoutCancel()
+
+	stream, err := llm.Stream(timeoutCtx, messages)
+	if err != nil {
+		writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "message", Role: "assistant", Content: conclusion})
+		writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "end", Data: g.Map{"sessionId": sessionId}})
+		_ = appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", conclusion)
+		return &v1.ChatRes{}, nil
+	}
+
+	var answerBuilder strings.Builder
+	defer func() {
+		if answerBuilder.Len() > 0 {
+			_ = appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", answerBuilder.String())
+		}
+	}()
+
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			consts.Logger.Errorf(ctx, "hybrid fast path LLM stream error: %v", err)
+			break
+		}
+		if chunk.Content != "" {
+			answerBuilder.WriteString(chunk.Content)
+			writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "message", Role: "assistant", Content: chunk.Content})
+		}
+	}
+	stream.Close()
+
+	totalMs := time.Since(queryStart).Milliseconds()
+	consts.Logger.Infof(ctx, "perf ask_number_hybrid intent=%s topic=%s queryMs=%d totalMs=%d chart=%v",
+		intent.Intent, intent.Topic, queryMs, totalMs, chartData != "")
+
+	writeChatSSE(ctx, r, model.ChatOutDataItem{Event: "end", Data: g.Map{"sessionId": sessionId}})
+	return &v1.ChatRes{}, nil
 }
 
 func ensureAskNumberSession(ctx context.Context, userId int, sessionId string, topic string, databaseId int, firstMessage string) (string, error) {
@@ -580,7 +736,7 @@ func suggestedQuestionsForTopic(topic string) []string {
 	case "grid":
 		return []string{"这个月哪个社区案件最多？", "本月网格案件结案率是多少？", "分析一下当前最需要关注的重大案件"}
 	case "population":
-		return []string{"今天哪个区域人流最多？", "最近 7 天人流趋势怎么样？", "分析一下今日流动人口变化情况"}
+		return []string{"今天人流的年龄分布？", "进站来源地排名前5？", "活力指数是多少？", "年轻人进站趋势如何？", "流动人口有异常吗？"}
 	case "traffic":
 		return []string{"今天车流总量是多少？", "哪个关口车流最多？", "最近 7 天港澳车趋势怎么样？"}
 	default:
@@ -593,7 +749,7 @@ func inputPlaceholderForTopic(topic string) string {
 	case "grid":
 		return "可以问我案件总量、结案率、社区排名、类别分布、重大案件..."
 	case "population":
-		return "可以问我人流总量、区域排名、峰值时段、趋势、流动人口..."
+		return "可以问我人流总量、区域排名、峰值时段、年龄分布、来源地占比、活力指数..."
 	case "traffic":
 		return "可以问我车流总量、关口排名、港澳车、外地车、停留时长..."
 	default:
@@ -1018,36 +1174,51 @@ func insertSystemQueryLog(ctx context.Context, username string, topic string, me
 type fastPathKind int
 
 const (
-	fpTrafficToday          fastPathKind = iota // 今日车流汇总
-	fpTrafficTopGateToday                       // 今日车流最大卡口
-	fpTrafficWeek                               // 近七天车流趋势
-	fpTrafficHkMacau                            // 港澳车占比
-	fpTrafficGateRank                           // 卡口排名
-	fpTrafficWeekendCompare                     // 周末和平日对比
-	fpTrafficHolidayCompare                     // 节假日和平日对比
-	fpTrafficForeignOrigin                      // 外地车来源排名
-	fpTrafficDwellTop                           // 驻留时长Top车辆
-	fpTrafficProvinceInside                    // 省内车占比
-	fpTrafficYoY                               // 同比
-	fpTrafficMoM                               // 环比
-	fpTrafficHoliday                           // 节假日车流查询
-	fpTrafficStayDistribution                  // 停留时长分布
-	fpTrafficOriginByProvince                  // 外省来源排名
-	fpPopWeekTrend                              // 近七天进出趋势
-	fpPopHolidayCompare                         // 节假日对比
-	fpPopRegionRank                             // 区域人流排名
-	fpPopHourlyTrend                            // 按小时人流趋势
-	fpGridCaseCount                             // 案件数量
-	fpGridCloseRate                             // 结案率
-	fpGridRegionRank                            // 区域排名
-	fpGridCaseTypeDist                          // 案件类型分布
-	fpTrafficOverview                          // 车流整体情况（复合）
-	fpPopOverview                              // 人流综合分析（复合）
-	fpPopYoY                                   // 人流同比
-	fpPopMultiRegionCompare                    // 多区域趋势对比
-	fpPopFloatingAnomaly                       // 流动人口异常识别
-	fpGridOverview                            // 网格综合分析（复合）
-	fpTrafficHkMacauStay                      // 港澳车停留时长分布
+	fpTrafficToday            fastPathKind = iota // 今日车流汇总
+	fpTrafficTopGateToday                         // 今日车流最大卡口
+	fpTrafficWeek                                 // 近七天车流趋势
+	fpTrafficHkMacau                              // 港澳车占比
+	fpTrafficGateRank                             // 卡口排名
+	fpTrafficWeekendCompare                       // 周末和平日对比
+	fpTrafficHolidayCompare                       // 节假日和平日对比
+	fpTrafficForeignOrigin                        // 外地车来源排名
+	fpTrafficDwellTop                             // 驻留时长Top车辆
+	fpTrafficProvinceInside                       // 省内车占比
+	fpTrafficYoY                                  // 同比
+	fpTrafficMoM                                  // 环比
+	fpTrafficHoliday                              // 节假日车流查询
+	fpTrafficStayDistribution                     // 停留时长分布
+	fpTrafficOriginByProvince                     // 外省来源排名
+	fpPopWeekTrend                                // 近七天进出趋势
+	fpPopHolidayCompare                           // 节假日对比
+	fpPopRegionRank                               // 区域人流排名
+	fpPopRegionProportion                         // 区域人流占比
+	fpPopHourlyTrend                              // 按小时人流趋势
+	fpGridCaseCount                               // 案件数量
+	fpGridCloseRate                               // 结案率
+	fpGridRegionRank                              // 区域排名
+	fpGridCaseTypeDist                            // 案件类型分布
+	fpTrafficOverview                             // 车流整体情况（复合）
+	fpPopOverview                                 // 人流综合分析（复合）
+	fpPopYoY                                      // 人流同比
+	fpPopMultiRegionCompare                       // 多区域趋势对比
+	fpPopFloatingAnomaly                          // 流动人口异常识别
+	fpPopTagDistribution                          // 人流标签分布
+	fpPopTagTopN                                  // 人流标签TopN排名
+	fpPopTagTrend                                 // 人流标签趋势
+	fpPopActivationSummary                        // 人流活力指数（单日卡片）
+	fpPopActivationTrend                          // 人流活力趋势（活力+基线）
+	fpPopPortrait                                 // 人流画像（复合：总量+活力+年龄饼图+来源地排名）
+	fpGridOverview                                // 网格综合分析（复合）
+	fpTrafficHkMacauStay                          // 港澳车停留时长分布
+	fpTrafficInOutRatio                           // 进出方向占比
+	fpTrafficMultiGateCompare                     // 多卡口对比
+	fpTrafficHkMacauYoY                           // 港澳车同比
+	fpPopTagProportion                            // 标签占比(年龄/性别/来源)
+	fpPopMultiTagTrend                            // 多标签组合趋势
+	fpPopComprehensive                            // 多维度综合分析
+	fpPopMultiTagCompare                          // 多标签/多指标对比
+	fpGridAvgHandle                              // 平均处理时长
 )
 
 type fastPath struct {
@@ -1073,10 +1244,16 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"近七", "近7", "最近七天", "最近7天", "一周车流", "7天车流", "车流趋势"}) {
 			return &fastPath{kind: fpTrafficWeek, topic: topic}
 		}
-		if containsAny(q, []string{"港澳", "港车", "澳车", "港澳车占比", "港澳车比例"}) {
+		if containsAny(q, []string{"港澳车同比", "港澳同比", "港澳车变化", "港澳变化"}) {
+			return &fastPath{kind: fpTrafficHkMacauYoY, topic: topic}
+		}
+		if containsAny(q, []string{"港澳车停留", "港澳停留时长", "港澳车停留分布", "港澳车停多久", "港澳车驻留分布"}) {
+			return &fastPath{kind: fpTrafficHkMacauStay, topic: topic}
+		}
+		if containsAny(q, []string{"港澳车", "港车", "港澳占比", "港澳车比例", "港澳车数量"}) {
 			return &fastPath{kind: fpTrafficHkMacau, topic: topic}
 		}
-		if containsAny(q, []string{"卡口排名", "卡口排行", "卡口最多", "卡口最忙", "车流排名", "车流量排名", "排名前十"}) {
+		if containsAny(q, []string{"卡口排名", "卡口排行", "卡口最多", "卡口最忙", "车流排名", "车流量排名", "排名前十", "路口排名", "路口排行", "路口最多", "路口对比", "路口车流", "各个路口", "各路口", "关口对比", "关口车流", "车流量对比"}) {
 			return &fastPath{kind: fpTrafficGateRank, topic: topic}
 		}
 		if containsAny(q, []string{"节假日", "节日", "假日", "节假日和平日", "节假日车流", "假期车流"}) {
@@ -1085,13 +1262,16 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"周末", "平日", "工作日", "周末和平日", "周末车流", "工作日车流"}) {
 			return &fastPath{kind: fpTrafficWeekendCompare, topic: topic}
 		}
-		if containsAny(q, []string{"外地车", "外地来源", "外地车来源", "外省车", "来源排名", "来源地"}) {
+		if containsAny(q, []string{"外地车", "外地来源", "外省车", "来源类型", "来源地类型", "来源类型排名"}) {
 			return &fastPath{kind: fpTrafficForeignOrigin, topic: topic}
 		}
-		if containsAny(q, []string{"驻留", "停留", "驻留时长", "停留时长", "驻留最久", "停留最久", "停最久", "停最长"}) {
+		if containsAny(q, []string{"停留分布", "停留时长分布", "停多久", "停留分桶", "驻留分布"}) {
+			return &fastPath{kind: fpTrafficStayDistribution, topic: topic}
+		}
+		if containsAny(q, []string{"停留时长", "驻留时长", "驻留最久", "停留最久", "停最久", "停最长"}) {
 			return &fastPath{kind: fpTrafficDwellTop, topic: topic}
 		}
-		if containsAny(q, []string{"省内车", "省内占比", "省外车", "省外占比", "省内车占比", "省外车占比", "省内比例"}) {
+		if containsAny(q, []string{"省内车", "省内占比", "省外车", "省外占比", "省内车占比", "省外车占比", "省内比例", "广东车", "广东车占比", "广东占比"}) {
 			return &fastPath{kind: fpTrafficProvinceInside, topic: topic}
 		}
 		if containsAny(q, []string{"同比", "去年同期", "去年车流", "比去年"}) {
@@ -1103,11 +1283,14 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"国庆车流", "春节车流", "元旦车流", "清明车流", "劳动节车流", "端午车流", "中秋车流"}) {
 			return &fastPath{kind: fpTrafficHoliday, topic: topic}
 		}
-		if containsAny(q, []string{"停留分布", "停留时长分布", "停多久", "停留分桶", "驻留分布"}) {
-			return &fastPath{kind: fpTrafficStayDistribution, topic: topic}
-		}
-		if containsAny(q, []string{"外省来源排名", "各省车流", "来源省排名", "省外来源"}) {
+		if containsAny(q, []string{"外省来源排名", "各省车流", "来源省排名", "省外来源", "来源城市排名", "省份来源"}) {
 			return &fastPath{kind: fpTrafficOriginByProvince, topic: topic}
+		}
+		if containsAny(q, []string{"进出占比", "进出比例", "方向分布", "进出方向", "进出车流", "进出比", "各地车流占比", "车流占比"}) {
+			return &fastPath{kind: fpTrafficInOutRatio, topic: topic}
+		}
+		if containsAny(q, []string{"卡口对比", "对比卡口", "多卡口", "几个卡口", "卡口比较", "对比几个卡口"}) {
+			return &fastPath{kind: fpTrafficMultiGateCompare, topic: topic}
 		}
 		if containsAny(q, []string{"车流整体", "车流情况", "车流概况", "车流综合", "车流怎么样", "车流总览"}) {
 			return &fastPath{kind: fpTrafficOverview, topic: topic}
@@ -1119,13 +1302,19 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"节假日", "节日", "假期对比", "假期人流", "假日"}) {
 			return &fastPath{kind: fpPopHolidayCompare, topic: topic}
 		}
-		if containsAny(q, []string{"区域排名", "区域人流", "排行", "最多人", "人流最多"}) {
+		if containsAny(q, []string{"区域排名", "区域人流", "区域排行", "最多人", "人流最多", "哪个地方人流", "哪里人流", "哪个人多", "哪个区域", "哪地方人最多"}) {
 			return &fastPath{kind: fpPopRegionRank, topic: topic}
+		}
+		if containsAny(q, []string{"各地占比", "区域占比", "各地人流占比", "人流占比", "区域比例", "各地比例", "各地人流", "各地人流量", "各地占比多少", "人流分布"}) {
+			return &fastPath{kind: fpPopRegionProportion, topic: topic}
 		}
 		if containsAny(q, []string{"按小时", "每小时", "小时趋势", "时段分布", "几点最多", "高峰时段", "人流量分布"}) {
 			return &fastPath{kind: fpPopHourlyTrend, topic: topic}
 		}
-		if containsAny(q, []string{"人流整体", "人流情况", "人流概况", "人流综合", "人流怎么样", "人流总览"}) {
+		if containsAny(q, []string{"人流画像", "人流综合画像", "给我一个人流", "人流全面分析", "全面分析人流", "人流情况分析", "人流详细分析"}) {
+			return &fastPath{kind: fpPopPortrait, topic: topic}
+		}
+		if containsAny(q, []string{"人流整体", "人流情况", "人流概况", "人流怎么样", "人流总览"}) {
 			return &fastPath{kind: fpPopOverview, topic: topic}
 		}
 		if containsAny(q, []string{"同比", "去年同期", "比去年", "去年"}) {
@@ -1137,21 +1326,51 @@ func matchFastPath(topic, question string) *fastPath {
 		if containsAny(q, []string{"流动人口", "异常增长", "异常变化", "流动人口异常"}) {
 			return &fastPath{kind: fpPopFloatingAnomaly, topic: topic}
 		}
-		case "grid":
+		if containsAny(q, []string{"占比多少", "比例多少", "百分比", "份额", "男女比例", "年龄占比多少", "性别占比多少", "来源占比多少", "占多少", "占比如何"}) {
+			return &fastPath{kind: fpPopTagProportion, topic: topic}
+		}
+		if containsAny(q, []string{"年龄段趋势", "年龄趋势对比", "各年龄段变化", "各年龄段趋势", "各性别趋势", "各来源趋势", "各标签趋势", "多标签趋势", "标签趋势", "标签变化"}) {
+			return &fastPath{kind: fpPopMultiTagTrend, topic: topic}
+		}
+		if containsAny(q, []string{"综合分析一下人流", "人流综合概况", "人流全貌", "综合情况", "全面分析一下", "人流综合分析"}) {
+			return &fastPath{kind: fpPopComprehensive, topic: topic}
+		}
+		if containsAny(q, []string{"年龄和性别", "年龄性别", "标签对比", "分布对比", "年龄与来源", "多个标签", "多维对比"}) {
+			return &fastPath{kind: fpPopMultiTagCompare, topic: topic}
+		}
+		if containsAny(q, []string{"来源地排名", "来源排名", "年龄段排名", "年龄排名", "哪个年龄", "哪个来源", "标签排名", "标签排行", "标签前", "来源前", "年龄前", "排名前", "排行前", "最多的是哪个", "哪个最多"}) {
+			return &fastPath{kind: fpPopTagTopN, topic: topic}
+		}
+		if containsAny(q, []string{"年龄分布", "年龄段", "性别分布", "来源地分布", "来源分布", "年龄占比", "性别占比", "来源占比", "分布怎样", "分布情况"}) {
+			return &fastPath{kind: fpPopTagDistribution, topic: topic}
+		}
+		if containsAny(q, []string{"年龄趋势", "性别趋势", "来源趋势", "年龄变化", "性别变化", "来源变化", "年轻人趋势", "年轻人变化", "中年人趋势", "老年趋势", "女性趋势", "男性趋势", "人群趋势", "人群变化"}) {
+			return &fastPath{kind: fpPopTagTrend, topic: topic}
+		}
+		if containsAny(q, []string{"活力指数", "活力值", "活跃度", "活力多少"}) {
+			return &fastPath{kind: fpPopActivationSummary, topic: topic}
+		}
+		if containsAny(q, []string{"活力趋势", "活力变化", "活力对比", "基线对比", "活力和基线"}) {
+			return &fastPath{kind: fpPopActivationTrend, topic: topic}
+		}
+	case "grid":
+		if containsAny(q, []string{"区域排名", "区域案件", "排行", "最多案件", "社区排名", "社区排行", "各社区", "社区结案率排名", "结案率排名", "区域结案率", "社区结案率", "社区案件", "社区案件数量"}) {
+			return &fastPath{kind: fpGridRegionRank, topic: topic}
+		}
 		if containsAny(q, []string{"案件数量", "有多少案件", "案件数", "案件总数"}) {
 			return &fastPath{kind: fpGridCaseCount, topic: topic}
 		}
 		if containsAny(q, []string{"结案率", "办结率", "结案比例"}) {
 			return &fastPath{kind: fpGridCloseRate, topic: topic}
 		}
-		if containsAny(q, []string{"区域排名", "区域案件", "排行", "最多案件"}) {
-			return &fastPath{kind: fpGridRegionRank, topic: topic}
-		}
 		if containsAny(q, []string{"案件类型", "类型分布", "类型统计", "哪类案件", "案件分类"}) {
 			return &fastPath{kind: fpGridCaseTypeDist, topic: topic}
-			if containsAny(q, []string{"网格整体", "网格综合", "网格整体情况", "网格概览", "网格综合分析", "网格情况", "网格总览"}) {
-				return &fastPath{kind: fpGridOverview, topic: topic}
-			}
+		}
+		if containsAny(q, []string{"平均处理时长", "平均办理时长", "处理时长", "办理时长", "平均处理时间"}) {
+			return &fastPath{kind: fpGridAvgHandle, topic: topic}
+		}
+		if containsAny(q, []string{"网格整体", "网格综合", "网格整体情况", "网格概览", "网格综合分析", "网格情况", "网格总览"}) {
+			return &fastPath{kind: fpGridOverview, topic: topic}
 		}
 	}
 	return nil
@@ -1192,20 +1411,50 @@ func executeFastPath(ctx context.Context, fp *fastPath) (answer string, chartDat
 		return fastTrafficOriginByProvince(ctx, p)
 	case fpTrafficOverview:
 		return fastTrafficOverview(ctx, p)
-	case fpPopWeekTrend, fpPopHolidayCompare, fpPopRegionRank, fpPopHourlyTrend:
-		return fastPopQuery(ctx, fp.kind)
+	case fpPopWeekTrend, fpPopHolidayCompare, fpPopRegionRank, fpPopRegionProportion, fpPopHourlyTrend:
+		return fastPopQuery(ctx, fp.kind, fp.params)
 	case fpPopOverview:
 		return fastPopOverview(ctx, p)
 	case fpPopYoY:
-		return fastPopYoYQuery(ctx)
+		return fastPopYoYQuery(ctx, p)
 	case fpPopMultiRegionCompare:
-		return fastPopMultiRegionCompareQuery(ctx)
+		return fastPopMultiRegionCompareQuery(ctx, p)
 	case fpPopFloatingAnomaly:
-		return fastPopFloatingAnomalyQuery(ctx)
+		return fastPopFloatingAnomalyQuery(ctx, p)
+	case fpPopTagDistribution:
+		return fastPopTagDistributionQuery(ctx, fp.params)
+	case fpPopTagTopN:
+		return fastPopTagTopNQuery(ctx, fp.params)
+	case fpPopTagTrend:
+		return fastPopTagTrendQuery(ctx, fp.params)
+	case fpPopActivationSummary:
+		return fastPopActivationSummaryQuery(ctx, fp.params)
+	case fpPopActivationTrend:
+		return fastPopActivationTrendQuery(ctx, fp.params)
+	case fpPopPortrait:
+		return fastPopPortraitQuery(ctx, fp.params)
+	case fpTrafficInOutRatio:
+		return fastTrafficInOutRatio(ctx, p)
+	case fpTrafficMultiGateCompare:
+		return fastTrafficMultiGateCompare(ctx, p)
+	case fpTrafficHkMacauYoY:
+		return fastTrafficHkMacauYoYQuery(ctx, p)
+	case fpTrafficHkMacauStay:
+		return fastTrafficHkMacauStay(ctx, p)
+	case fpPopTagProportion:
+		return fastPopTagProportionQuery(ctx, fp.params)
+	case fpPopMultiTagTrend:
+		return fastPopMultiTagTrendQuery(ctx, fp.params)
+	case fpPopComprehensive:
+		return fastPopComprehensiveQuery(ctx, p)
+	case fpPopMultiTagCompare:
+		return fastPopMultiTagCompareQuery(ctx, p)
 	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist:
-		return fastGridQueryStable(ctx, fp.kind)
-		case fpGridOverview:
-			return fastGridOverview(ctx, fp.params)
+		return fastGridQueryStable(ctx, fp.kind, fp.params)
+	case fpGridOverview:
+		return fastGridOverview(ctx, fp.params)
+	case fpGridAvgHandle:
+		return fastGridAvgHandle(ctx, fp.params)
 	}
 	return "暂不支持该问题的快速查询。", "", nil
 }
@@ -1247,23 +1496,23 @@ func formatFastPathAnswer(ctx context.Context, fp *fastPath, conclusion string, 
 func fastPathFeatureText(ctx context.Context, fp *fastPath, conclusion string, hasChart bool) string {
 	switch fp.kind {
 	case fpTrafficToday:
-		return "统计口径为当天卡口通行记录，按进入、离开、港澳车等业务维度汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(1) + "卡口通行记录，按进入、离开、港澳车等业务维度汇总。" + dataHint(conclusion)
 	case fpTrafficTopGateToday, fpTrafficGateRank:
-		return "统计口径为当天卡口通行记录，按卡口车流量进行排名汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(1) + "卡口通行记录，按卡口车流量进行排名汇总。" + dataHint(conclusion)
 	case fpTrafficWeek:
-		return "统计口径为近七天卡口通行记录，按日期进行汇总对比。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按日期进行汇总对比。" + dataHint(conclusion)
 	case fpTrafficHkMacau:
-		return "统计口径为近七天卡口通行记录，按港澳车与其他车辆构成进行汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按港澳车与其他车辆构成进行汇总。" + dataHint(conclusion)
 	case fpTrafficWeekendCompare:
 		return "统计口径为最近一周周末与工作日的卡口通行记录，计算日均车流进行对比。" + dataHint(conclusion)
 	case fpTrafficHolidayCompare:
 		return "统计口径为最近一个中国法定节假日假期与相邻工作日的卡口通行记录，计算日均车流进行对比。" + dataHint(conclusion)
 	case fpTrafficForeignOrigin:
-		return "统计口径为近七天卡口通行记录，按车牌归属地类型进行排名汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按车牌归属地类型进行排名汇总。" + dataHint(conclusion)
 	case fpTrafficDwellTop:
-		return "统计口径为近七天卡口通行记录，按同一车牌多卡口时间差计算驻留时长。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按同一车牌多卡口时间差计算驻留时长。" + dataHint(conclusion)
 	case fpTrafficProvinceInside:
-		return "统计口径为近七天卡口通行记录，按车牌归属地分为省内车和省外车进行汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按车牌归属地分为省内车和省外车进行汇总。" + dataHint(conclusion)
 	case fpTrafficYoY:
 		return "统计口径为当前查询周期与去年同期卡口通行记录对比。" + dataHint(conclusion)
 	case fpTrafficMoM:
@@ -1271,15 +1520,35 @@ func fastPathFeatureText(ctx context.Context, fp *fastPath, conclusion string, h
 	case fpTrafficHoliday:
 		return "统计口径为指定中国法定节假日期间的卡口通行记录汇总。" + dataHint(conclusion)
 	case fpTrafficStayDistribution:
-		return "统计口径为近七天卡口通行记录，按停留时长分桶统计车辆分布。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按停留时长分桶统计车辆分布。" + dataHint(conclusion)
 	case fpTrafficOriginByProvince:
-		return "统计口径为近七天卡口通行记录，按车牌归属省份和城市进行排名汇总。" + dataHint(conclusion)
-	case fpPopWeekTrend, fpPopRegionRank:
-		return "统计口径为近七天人流记录，按日期或区域维度汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(7) + "卡口通行记录，按车牌归属省份和城市进行排名汇总。" + dataHint(conclusion)
+	case fpPopWeekTrend, fpPopRegionRank, fpPopRegionProportion:
+		return "统计口径为人流记录，按日期或区域维度汇总。" + dataHint(conclusion)
 	case fpPopHolidayCompare:
 		return "统计口径为当前可识别周期与上一可比周期的人流记录对比；如需严格法定节假日口径，应接入节假日日历数据。" + dataHint(conclusion)
 	case fpPopHourlyTrend:
-		return "统计口径为今日人流记录，按时段维度汇总。" + dataHint(conclusion)
+		return "统计口径为" + fp.params.PeriodLabel(1) + "人流记录，按时段维度汇总。" + dataHint(conclusion)
+	case fpPopYoY:
+		return "统计口径为当前周期与去年同期人流记录对比。" + dataHint(conclusion)
+	case fpPopMultiRegionCompare:
+		return "统计口径为人流记录，按区域维度对比汇总。" + dataHint(conclusion)
+	case fpPopFloatingAnomaly:
+		return "统计口径为流动人口数据，按区域维度与上周同期对比检测异常增长。" + dataHint(conclusion)
+	case fpPopTagDistribution:
+		return "统计口径为" + fp.params.PeriodLabel(7) + "人流标签数据，按年龄、性别、来源地等维度汇总分布。" + dataHint(conclusion)
+	case fpPopTagTopN:
+		return "统计口径为" + fp.params.PeriodLabel(7) + "人流标签数据，按指定维度取排名前N的标签值。" + dataHint(conclusion)
+	case fpPopTagTrend:
+		return "统计口径为" + fp.params.PeriodLabel(7) + "人流标签数据，按指定标签和日期维度聚合，展示各标签人数的日趋势。" + dataHint(conclusion)
+	case fpPopActivationSummary:
+		return "统计口径为" + fp.params.PeriodLabel(1) + "活力汇总数据，活力指数反映人流活跃程度，与基线偏离度标识异常。" + dataHint(conclusion)
+	case fpPopActivationTrend:
+		return "统计口径为" + fp.params.PeriodLabel(7) + "活力指数与基线对比，活力值高于基线表示人流超常活跃。" + dataHint(conclusion)
+	case fpPopPortrait:
+		return "综合口径：总量+活力来自日汇总表，年龄和来源地来自标签日聚合表，区域排名来自人流聚合，按7天维度汇总。" + dataHint(conclusion)
+	case fpPopOverview:
+		return "统计口径为人流记录，按日期和区域维度综合汇总。" + dataHint(conclusion)
 	case fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist, fpGridOverview:
 		return "统计口径为当前网格案件数据，按案件数量、办结状态、区域或案件类型维度汇总。" + dataHint(conclusion)
 	default:
@@ -1390,15 +1659,10 @@ func buildInsightItems(fp *fastPath, conclusion string) (keyPoints, impacts, sug
 // ---- Traffic fast paths ----
 
 func fastTrafficToday(ctx context.Context, p ExtractedParams) (string, string, error) {
-	dateFrom := gtime.Now().Format("Y-m-d")
-	dateTo := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	if p.Days == 1 && p.DateFrom != "" {
-		dateFrom = p.DateFrom
-		dateTo = p.DateTo
-	}
+	from, to, label := fastPathTrafficDateRangeLabel(p, 1)
 	query := model.TrafficAggregateQuery{
-		DateFrom: dateFrom,
-		DateTo:   dateTo,
+		DateFrom: from,
+		DateTo:   to,
 		GroupBy:  "day",
 	}
 	if p.GateName != "" {
@@ -1412,21 +1676,19 @@ func fastTrafficToday(ctx context.Context, p ExtractedParams) (string, string, e
 		return "", "", err
 	}
 	s := result.Summary
-	answer := fmt.Sprintf("今日车流总计 %d 辆，其中进入 %d 辆，离开 %d 辆。港澳车 %d 辆，占比 %.1f%%。",
-		s.Total, s.InCount, s.OutCount, s.HkMacauCount, s.HkMacauRatio*100)
+	if s.Total == 0 {
+		return label + "暂无车流数据。", "", nil
+	}
+	answer := fmt.Sprintf("%s车流总计 %d 辆，其中进入 %d 辆，离开 %d 辆。港澳车 %d 辆，占比 %.1f%%。",
+		label, s.Total, s.InCount, s.OutCount, s.HkMacauCount, s.HkMacauRatio*100)
 	return answer, "", nil
 }
 
 func fastTrafficTopGateToday(ctx context.Context, p ExtractedParams) (string, string, error) {
-	dateFrom := gtime.Now().Format("Y-m-d")
-	dateTo := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	if p.Days == 1 && p.DateFrom != "" {
-		dateFrom = p.DateFrom
-		dateTo = p.DateTo
-	}
+	from, to, label := fastPathTrafficDateRangeLabel(p, 1)
 	result, err := service.Traffic().Aggregate(ctx, model.TrafficAggregateQuery{
-		DateFrom:    dateFrom,
-		DateTo:      dateTo,
+		DateFrom:    from,
+		DateTo:      to,
 		GroupBy:     "gate",
 		GateName:    p.GateName,
 		PlateRegion: p.RegionName,
@@ -1435,23 +1697,22 @@ func fastTrafficTopGateToday(ctx context.Context, p ExtractedParams) (string, st
 		return "", "", err
 	}
 	if len(result.Series) == 0 {
-		return "今日暂无卡口车流数据。", "", nil
+		return label + "暂无卡口车流数据。", "", nil
 	}
 	xLabels, totalData, tableRows := trafficGateRankChartData(result.Series, 10)
-	chart := buildChart("bar", "今日卡口车流排名（Top10）", xLabels,
+	chartTitle := label + "卡口车流排名（Top10）"
+	if p.AllDates {
+		chartTitle = "全部日期卡口车流排名（Top10）"
+	}
+	chart := buildChart("bar", chartTitle, xLabels,
 		[]chartSeries{{Name: "车流量", Data: totalData}},
 		[]string{"卡口", "合计", "进入", "离开"}, tableRows)
-	answer := fmt.Sprintf("今日车流量最大的卡口为「%s」，共 %d 辆。", result.Series[0].Name, result.Series[0].Total)
+	answer := fmt.Sprintf("%s车流量最大的卡口为「%s」，共 %d 辆。", label, result.Series[0].Name, result.Series[0].Total)
 	return answer, chart, nil
 }
 
 func fastTrafficWeek(ctx context.Context, p ExtractedParams) (string, string, error) {
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	from := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-	if p.Days > 0 && p.DateFrom != "" {
-		from = p.DateFrom
-		to = p.DateTo
-	}
+	from, to, label := fastPathTrafficDateRangeLabel(p, 7)
 	result, err := service.Traffic().Aggregate(ctx, model.TrafficAggregateQuery{
 		DateFrom:    from,
 		DateTo:      to,
@@ -1463,7 +1724,7 @@ func fastTrafficWeek(ctx context.Context, p ExtractedParams) (string, string, er
 		return "", "", err
 	}
 	if len(result.Series) == 0 {
-		return "近七天暂无车流数据。", "", nil
+		return label + "暂无车流数据。", "", nil
 	}
 	xLabels := make([]string, 0, len(result.Series))
 	inData := make([]int, 0, len(result.Series))
@@ -1480,21 +1741,16 @@ func fastTrafficWeek(ctx context.Context, p ExtractedParams) (string, string, er
 	if days <= 0 {
 		days = 7
 	}
-	chart := buildChart("line", fmt.Sprintf("近%d天车流进出趋势", days), xLabels,
+	chart := buildChart("line", fmt.Sprintf("%s车流进出趋势", label), xLabels,
 		[]chartSeries{{Name: "进入", Data: inData}, {Name: "离开", Data: outData}},
 		[]string{"日期", "进入", "离开", "合计"}, tableRows)
-	answer := fmt.Sprintf("近%d天车流总计 %d 辆，日均 %.0f 辆。港澳车占比 %.1f%%。",
-		days, s.Total, float64(s.Total)/float64(days), s.HkMacauRatio*100)
+	answer := fmt.Sprintf("%s车流总计 %d 辆，日均 %.0f 辆。港澳车占比 %.1f%%。",
+		label, s.Total, float64(s.Total)/float64(days), s.HkMacauRatio*100)
 	return answer, chart, nil
 }
 
 func fastTrafficHkMacau(ctx context.Context, p ExtractedParams) (string, string, error) {
-	from := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	if p.Days > 0 && p.DateFrom != "" {
-		from = p.DateFrom
-		to = p.DateTo
-	}
+	from, to, label := fastPathTrafficDateRangeLabel(p, 7)
 	result, err := service.Traffic().Aggregate(ctx, model.TrafficAggregateQuery{
 		DateFrom:    from,
 		DateTo:      to,
@@ -1506,21 +1762,88 @@ func fastTrafficHkMacau(ctx context.Context, p ExtractedParams) (string, string,
 		return "", "", err
 	}
 	s := result.Summary
-	answer := fmt.Sprintf("近七天车流中，港澳车 %d 辆，占总车流 %.1f%%；内地车 %d 辆，占比 %.1f%%。",
-		s.HkMacauCount, s.HkMacauRatio*100, s.MainlandCount, (1-s.HkMacauRatio)*100)
-	return answer, "", nil
+	if s.Total <= 0 {
+		answer := fmt.Sprintf("%s未查询到车流记录，无法计算港澳车占比。", label)
+		return answer, "", nil
+	}
+	mainlandRatio := float64(s.MainlandCount) / float64(s.Total) * 100
+	if containsAny(p.Question, []string{"广东车", "广东占比", "广东车占比", "省内车", "省内占比"}) {
+		provinceRatio := float64(s.ProvinceInsideCount) / float64(s.Total) * 100
+		provinceInMainlandRatio := 0.0
+		if s.MainlandCount > 0 {
+			provinceInMainlandRatio = float64(s.ProvinceInsideCount) / float64(s.MainlandCount) * 100
+		}
+		answer := fmt.Sprintf("%s，总车流 %d 辆，其中港澳车 %d 辆，占比 %.1f%%；内地车 %d 辆，占比 %.1f%%；广东车 %d 辆，占总车流 %.1f%%、占内地车 %.1f%%。",
+			label, s.Total, s.HkMacauCount, s.HkMacauRatio*100, s.MainlandCount, mainlandRatio, s.ProvinceInsideCount, provinceRatio, provinceInMainlandRatio)
+		chart := buildChart("pie", "港澳车/内地车占比", []string{"港澳车", "内地车"},
+			[]chartSeries{{Name: "车流", Data: []int{s.HkMacauCount, s.MainlandCount}}},
+			[]string{"类型", "数量", "占比"}, [][]any{
+				{"港澳车", s.HkMacauCount, fmt.Sprintf("%.1f%%", s.HkMacauRatio*100)},
+				{"内地车", s.MainlandCount, fmt.Sprintf("%.1f%%", mainlandRatio)},
+			})
+		return answer, chart, nil
+	}
+	answer := fmt.Sprintf("%s，总车流 %d 辆，其中港澳车 %d 辆，占比 %.1f%%；内地车 %d 辆，占比 %.1f%%。",
+		label, s.Total, s.HkMacauCount, s.HkMacauRatio*100, s.MainlandCount, mainlandRatio)
+	chart := buildChart("pie", "港澳车/内地车占比", []string{"港澳车", "内地车"},
+		[]chartSeries{{Name: "车流", Data: []int{s.HkMacauCount, s.MainlandCount}}},
+		[]string{"类型", "数量", "占比"}, [][]any{
+			{"港澳车", s.HkMacauCount, fmt.Sprintf("%.1f%%", s.HkMacauRatio*100)},
+			{"内地车", s.MainlandCount, fmt.Sprintf("%.1f%%", mainlandRatio)},
+		})
+	return answer, chart, nil
+}
+
+func fastPathTrafficDateRangeLabel(p ExtractedParams, defaultDays int) (from, to, label string) {
+	if p.AllDates {
+		return "", "", "当前可用全部日期范围"
+	}
+	if p.DateFrom != "" {
+		label = fastPathDateLabel(p)
+		return p.DateFrom, p.DateTo, label
+	}
+	if defaultDays <= 0 {
+		defaultDays = 7
+	}
+	from = gtime.Now().AddDate(0, 0, -(defaultDays - 1)).Format("Y-m-d")
+	to = gtime.Now().Format("Y-m-d") + " 23:59:59"
+	return from, to, fmt.Sprintf("近%d天", defaultDays)
+}
+
+func fastPathDateLabel(p ExtractedParams) string {
+	now := gtime.Now()
+	today := now.Format("Y-m-d")
+	yesterday := now.AddDate(0, 0, -1).Format("Y-m-d")
+	if p.Days == 1 {
+		switch p.DateFrom {
+		case today:
+			return p.PeriodLabel(1)
+		case yesterday:
+			return "昨日"
+		default:
+			return p.DateFrom
+		}
+	}
+	switch p.Days {
+	case 7:
+		return "近7天"
+	case 30:
+		return "近30天"
+	}
+	if p.Days > 0 {
+		return fmt.Sprintf("近%d天", p.Days)
+	}
+	if p.DateFrom != "" && p.DateTo != "" {
+		return fmt.Sprintf("%s至%s", p.DateFrom, strings.TrimSuffix(p.DateTo, " 23:59:59"))
+	}
+	return "当前统计周期"
 }
 
 func fastTrafficGateRank(ctx context.Context, p ExtractedParams) (string, string, error) {
-	dateFrom := gtime.Now().Format("Y-m-d")
-	dateTo := gtime.Now().Format("Y-m-d") + " 23:59:59"
-	if p.Days == 1 && p.DateFrom != "" {
-		dateFrom = p.DateFrom
-		dateTo = p.DateTo
-	}
+	from, to, label := fastPathTrafficDateRangeLabel(p, 7)
 	result, err := service.Traffic().Aggregate(ctx, model.TrafficAggregateQuery{
-		DateFrom:    dateFrom,
-		DateTo:      dateTo,
+		DateFrom:    from,
+		DateTo:      to,
 		GroupBy:     "gate",
 		GateName:    p.GateName,
 		PlateRegion: p.RegionName,
@@ -1529,18 +1852,22 @@ func fastTrafficGateRank(ctx context.Context, p ExtractedParams) (string, string
 		return "", "", err
 	}
 	if len(result.Series) == 0 {
-		return "今日暂无卡口数据。", "", nil
+		return label + "暂无卡口数据。", "", nil
 	}
 	xLabels, totalData, tableRows := trafficGateRankChartData(result.Series, 10)
-	chart := buildChart("bar", "今日卡口车流排名（Top10）", xLabels,
+	chartTitle := label + "卡口车流排名（Top10）"
+	if p.AllDates {
+		chartTitle = "全部日期卡口车流排名（Top10）"
+	}
+	chart := buildChart("bar", chartTitle, xLabels,
 		[]chartSeries{{Name: "车流量", Data: totalData}},
 		[]string{"卡口", "合计", "进入", "离开"}, tableRows)
-	answer := fmt.Sprintf("今日车流量最大的卡口为「%s」，共 %d 辆。", result.Series[0].Name, result.Series[0].Total)
+	answer := fmt.Sprintf("%s车流量最大的卡口为「%s」，共 %d 辆。", label, result.Series[0].Name, result.Series[0].Total)
 	return answer, chart, nil
 }
 
 func fastTrafficWeekendCompare(ctx context.Context, p ExtractedParams) (string, string, error) {
-	weekendDates, workdayDates := recentWeekendAndWorkdayDates(time.Now(), 14)
+	weekendDates, workdayDates := recentWeekendAndWorkdayDates(gtime.Now().Time, 14)
 	weekendSummary, err := trafficSummaryForDates(ctx, weekendDates)
 	if err != nil {
 		return "", "", err
@@ -1586,7 +1913,7 @@ func fastTrafficWeekendCompare(ctx context.Context, p ExtractedParams) (string, 
 }
 
 func fastTrafficHolidayCompare(ctx context.Context, p ExtractedParams) (string, string, error) {
-	period, ok := latestChinaHolidayPeriod(time.Now())
+	period, ok := latestChinaHolidayPeriod(gtime.Now().Time)
 	if !ok {
 		return "当前未配置可用的中国法定节假日日历，无法进行节假日和平日对比。", "", nil
 	}
@@ -1640,16 +1967,17 @@ func fastTrafficHolidayCompare(ctx context.Context, p ExtractedParams) (string, 
 }
 
 func fastTrafficForeignOrigin(ctx context.Context, p ExtractedParams) (string, string, error) {
+	from, to := trafficDateRange(p, 7)
 	result, err := service.Traffic().Aggregate(ctx, model.TrafficAggregateQuery{
-		DateFrom: gtime.Now().AddDate(0, 0, -6).Format("Y-m-d"),
-		DateTo:   gtime.Now().Format("Y-m-d") + " 23:59:59",
+		DateFrom: from,
+		DateTo:   to,
 		GroupBy:  "plateregion",
 	})
 	if err != nil {
 		return "", "", err
 	}
 	if len(result.Series) == 0 {
-		return "近七天暂无外地车来源数据。", "", nil
+		return p.PeriodLabel(7) + "暂无外地车来源数据。", "", nil
 	}
 	xLabels := make([]string, 0, len(result.Series))
 	totalData := make([]int, 0, len(result.Series))
@@ -1662,19 +1990,22 @@ func fastTrafficForeignOrigin(ctx context.Context, p ExtractedParams) (string, s
 		totalData = append(totalData, item.Total)
 		tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), item.Name, item.Total})
 	}
-	chart := buildChart("bar", "近七天外地车来源排名（Top10）", xLabels,
+	chart := buildChart("bar", p.PeriodLabel(7)+"外地车来源排名（Top10）", xLabels,
 		[]chartSeries{{Name: "车流量", Data: totalData}},
 		[]string{"排名", "来源地", "车流量"}, tableRows)
-	answer := fmt.Sprintf("近七天外地车主要来自「%s」，共 %d 辆。", result.Series[0].Name, result.Series[0].Total)
+	answer := fmt.Sprintf("%s外地车主要来自「%s」，共 %d 辆。", p.PeriodLabel(7), result.Series[0].Name, result.Series[0].Total)
 	return answer, chart, nil
 }
 
 // ---- Traffic dwell time fast path ----
 
 func fastTrafficDwellTop(ctx context.Context, p ExtractedParams) (string, string, error) {
-	// 基于同一车牌多卡口多时间点记录，计算驻留时长最长的Top10车辆
 	now := gtime.Now()
-	from := now.AddDate(0, 0, -6).Format("Y-m-d")
+	days := p.Days
+	if days <= 0 {
+		days = 7
+	}
+	from := now.AddDate(0, 0, -(days-1)).Format("Y-m-d")
 	to := now.Format("Y-m-d") + " 23:59:59"
 
 	// 先查每个车牌经过的卡口数和首末时间
@@ -1694,7 +2025,7 @@ func fastTrafficDwellTop(ctx context.Context, p ExtractedParams) (string, string
 		return "", "", err
 	}
 	if len(records) == 0 {
-		return "近七天暂无车辆驻留数据。", "", nil
+		return p.PeriodLabel(7) + "暂无车辆驻留数据。", "", nil
 	}
 
 	xLabels := make([]string, 0, len(records))
@@ -1717,44 +2048,44 @@ func fastTrafficDwellTop(ctx context.Context, p ExtractedParams) (string, string
 		})
 	}
 
-	chart := buildChart("bar", "近七天车辆驻留时长Top10（分钟）", xLabels,
+	chart := buildChart("bar", p.PeriodLabel(7)+"车辆驻留时长Top10（分钟）", xLabels,
 		[]chartSeries{{Name: "驻留时长(分钟)", Data: dwellData}},
 		[]string{"排名", "车牌号", "经过卡口数", "驻留时长(分钟)", "首次出现", "末次出现"}, tableRows)
-	answer := fmt.Sprintf("近七天驻留时长最长的车辆为「%s」，驻留约%d分钟，经过%d个卡口。",
-		records[0]["plate_normalized"].String(),
-		dwellData[0],
-		records[0]["gate_count"].Int())
+	answer := fmt.Sprintf("%s驻留时长最长的车辆为「%s」，驻留约%d分钟，经过%d个卡口。",
+			p.PeriodLabel(7), records[0]["plate_normalized"].String(),
+			dwellData[0], records[0]["gate_count"].Int())
 	return answer, chart, nil
 }
 
 // ---- Population fast paths (via direct SQL) ----
 
-func fastPopQuery(ctx context.Context, kind fastPathKind) (string, string, error) {
+func fastPopQuery(ctx context.Context, kind fastPathKind, p ExtractedParams) (string, string, error) {
 	db := g.DB("master")
 	switch kind {
 	case fpPopWeekTrend:
-		return fastPopWeekTrendQuery(ctx, db)
+		return fastPopWeekTrendQuery(ctx, db, p)
 	case fpPopHolidayCompare:
-		return fastPopHolidayCompareQuery(ctx, db)
+		return fastPopHolidayCompareQuery(ctx, db, p)
 	case fpPopRegionRank:
-		return fastPopRegionRankQuery(ctx, db)
+		return fastPopRegionRankQuery(ctx, db, p)
+	case fpPopRegionProportion:
+		return fastPopRegionProportionQuery(ctx, db, p)
 	case fpPopHourlyTrend:
-		return fastPopHourlyTrendQuery(ctx, db)
+		return fastPopHourlyTrendQuery(ctx, db, p)
 	}
 	return "暂不支持该问题的快速查询。", "", nil
 }
 
-func fastPopWeekTrendQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	from := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
+func fastPopWeekTrendQuery(ctx context.Context, db gdb.DB, p ExtractedParams) (string, string, error) {
+	from, toFull := popDateRangeFromParams(ctx, p, 7)
 
 	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
 		DateFrom: from,
-		DateTo:   to,
+		DateTo:   toFull,
 		GroupBy:  "day",
 	})
 	if err != nil || result == nil || len(result.Series) == 0 {
-		return "近七天暂无人流数据。", "", nil
+		return "当前条件下暂无人流数据。", "", nil
 	}
 
 	s := result.Summary
@@ -1768,32 +2099,32 @@ func fastPopWeekTrendQuery(ctx context.Context, db gdb.DB) (string, string, erro
 		outData = append(outData, item.OutCount)
 		tableRows = append(tableRows, []any{item.Name, item.InCount, item.OutCount, item.InCount + item.OutCount})
 	}
-	chart := buildChart("line", "近七天人流进出趋势", xLabels,
+	chart := buildChart("line", "人流进出趋势", xLabels,
 		[]chartSeries{{Name: "进入人数", Data: inData}, {Name: "离开人数", Data: outData}},
 		[]string{"日期", "进入", "离开", "合计"}, tableRows)
-	answer := fmt.Sprintf("近七天人流总计 %d 人次，日均 %.0f 人次。", s.TotalInCount+s.TotalOutCount, float64(s.TotalInCount+s.TotalOutCount)/float64(len(result.Series)))
+	answer := fmt.Sprintf("人流总计 %d 人次，日均 %.0f 人次。", s.TotalInCount+s.TotalOutCount, float64(s.TotalInCount+s.TotalOutCount)/float64(len(result.Series)))
 	return answer, chart, nil
 }
 
-func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	loc, _ := time.LoadLocation("Asia/Shanghai")
-	now := time.Now().In(loc)
-	hp, found := latestChinaHolidayPeriod(now)
+func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB, p ExtractedParams) (string, string, error) {
+	now := gtime.Now()
+	hp, found := latestChinaHolidayPeriod(now.Time)
 	if !found {
-		thisFrom := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-		thisTo := gtime.Now().Format("Y-m-d") + " 23:59:59"
+		thisFrom, thisTo := popEffectiveRange(7)
+		thisToFull := thisTo + " 23:59:59"
 		thisResult, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
 			DateFrom: thisFrom,
-			DateTo:   thisTo,
+			DateTo:   thisToFull,
 			GroupBy:  "day",
 		})
 		if err != nil || thisResult == nil {
-			return "本周暂无人流数据。", "", nil
+			return p.PeriodLabel(7) + "暂无人流数据。", "", nil
 		}
 		thisTotal := thisResult.Summary.TotalInCount + thisResult.Summary.TotalOutCount
 
-		lastFrom := gtime.Now().AddDate(0, 0, -13).Format("Y-m-d")
-		lastTo := gtime.Now().AddDate(0, 0, -7).Format("Y-m-d") + " 23:59:59"
+		parsedTo, _ := gtime.StrToTime(thisTo, "Y-m-d")
+		lastFrom := parsedTo.AddDate(0, 0, -13).Format("Y-m-d")
+		lastTo := parsedTo.AddDate(0, 0, -7).Format("Y-m-d") + " 23:59:59"
 		lastResult, _ := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
 			DateFrom: lastFrom,
 			DateTo:   lastTo,
@@ -1812,7 +2143,7 @@ func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB) (string, string,
 			direction = "下降"
 			pct = -pct
 		}
-		answer := fmt.Sprintf("本周人流 %d 人次，上周 %d 人次，环比%s %.1f%%。", thisTotal, lastTotal, direction, pct)
+		answer := fmt.Sprintf("%s人流 %d 人次，上期 %d 人次，环比%s %.1f%%。", p.PeriodLabel(7), thisTotal, lastTotal, direction, pct)
 		return answer, "", nil
 	}
 
@@ -1829,10 +2160,10 @@ func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB) (string, string,
 	hTotal := hResult.Summary.TotalInCount + hResult.Summary.TotalOutCount
 	holidayDays := int(hp.End.Sub(hp.Start)/(24*time.Hour)) + 1
 
-	baseFrom := hp.Start.AddDate(0, 0, -7).Format("2006-01-02")
+	baseFrom := hp.Start.AddDate(0, 0, -7)
 	baseTo := hp.Start.AddDate(0, 0, -1).Format("2006-01-02") + " 23:59:59"
 	bResult, _ := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
-		DateFrom: baseFrom,
+		DateFrom: baseFrom.Format("2006-01-02"),
 		DateTo:   baseTo,
 		GroupBy:  "day",
 	})
@@ -1840,8 +2171,9 @@ func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB) (string, string,
 	if bResult != nil {
 		bTotal = bResult.Summary.TotalInCount + bResult.Summary.TotalOutCount
 	}
+	baseDays := 7
 	hDaily := float64(hTotal) / float64(holidayDays)
-	bDaily := float64(bTotal) / 7.0
+	bDaily := float64(bTotal) / float64(baseDays)
 	pct := 0.0
 	if bDaily > 0 {
 		pct = (hDaily - bDaily) / bDaily * 100
@@ -1851,49 +2183,232 @@ func fastPopHolidayCompareQuery(ctx context.Context, db gdb.DB) (string, string,
 		direction = "下降"
 		pct = -pct
 	}
-	answer := fmt.Sprintf("%s期间（%s至%s）日均人流 %.0f 人次，节前7天日均 %.0f 人次，日均%s %.1f%%。", hp.Name, holidayFrom, hp.End.Format("2006-01-02"), hDaily, bDaily, direction, pct)
+	answer := fmt.Sprintf("%s期间（%s至%s）日均人流 %.0f 人次，节前%d天日均 %.0f 人次，日均%s %.1f%%。", hp.Name, holidayFrom, hp.End.Format("2006-01-02"), hDaily, baseDays, bDaily, direction, pct)
 	return answer, "", nil
 }
 
-func fastPopRegionRankQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	from := gtime.Now().AddDate(0, 0, -6).Format("Y-m-d")
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
+func fastPopRegionRankQuery(ctx context.Context, db gdb.DB, p ExtractedParams) (string, string, error) {
+	from, toFull := popDateRangeFromParams(ctx, p, 7)
 
+	// Try population_metric_daily first (has in/out counts by region)
 	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
 		DateFrom: from,
-		DateTo:   to,
+		DateTo:   toFull,
 		GroupBy:  "region",
 	})
-	if err != nil || result == nil || len(result.Series) == 0 {
-		return "近七天暂无区域人流数据。", "", nil
+	if err == nil && result != nil && len(result.Series) > 0 {
+		filtered := make([]model.PopulationAggregateSeriesItem, 0, len(result.Series))
+		for _, item := range result.Series {
+			if item.Name != "全站" && item.Name != "" {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			sort.Slice(filtered, func(i, j int) bool {
+				return (filtered[i].InCount + filtered[i].OutCount) > (filtered[j].InCount + filtered[j].OutCount)
+			})
+			if len(filtered) > 10 {
+				filtered = filtered[:10]
+			}
+			xLabels := make([]string, 0, len(filtered))
+			totalData := make([]int, 0, len(filtered))
+			tableRows := make([][]any, 0, len(filtered))
+			for i, item := range filtered {
+				total := item.InCount + item.OutCount
+				xLabels = append(xLabels, item.Name)
+				totalData = append(totalData, total)
+				tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), item.Name, total})
+			}
+			chart := buildChart("bar", "区域人流排名（Top10）", xLabels,
+				[]chartSeries{{Name: "人流量", Data: totalData}},
+				[]string{"排名", "区域", "人流量"}, tableRows)
+			answer := fmt.Sprintf("人流最多的区域为「%s」，共 %d 人次。", filtered[0].Name, filtered[0].InCount+filtered[0].OutCount)
+			return answer, chart, nil
+		}
 	}
 
-	sort.Slice(result.Series, func(i, j int) bool {
-		return (result.Series[i].InCount+result.Series[i].OutCount) > (result.Series[j].InCount+result.Series[j].OutCount)
-	})
-	if len(result.Series) > 10 {
-		result.Series = result.Series[:10]
+	// Fallback: use population_tag_daily area dimension
+	// Must filter by a single tag+type to avoid double-counting people across tags
+	dateFrom := from
+	dateTo := toFull
+	if len(dateFrom) > 10 {
+		dateFrom = dateFrom[:10]
+	}
+	if len(dateTo) > 10 {
+		dateTo = dateTo[:10]
+	}
+	records, tagErr := db.Ctx(ctx).Raw(`
+SELECT COALESCE(NULLIF(area,''), '未知') AS name, SUM(label_cnt) AS total
+FROM population_tag_daily
+WHERE day >= DATE(?) AND day <= DATE(?) AND area <> '全站' AND tag = '年龄' AND type = 1
+GROUP BY name ORDER BY total DESC LIMIT 10`, dateFrom, dateTo).All()
+	if tagErr != nil || len(records) == 0 {
+		return "当前条件下暂无分区域人流数据。", "", nil
 	}
 
-	xLabels := make([]string, 0, len(result.Series))
-	totalData := make([]int, 0, len(result.Series))
-	tableRows := make([][]any, 0, len(result.Series))
-	for i, item := range result.Series {
-		total := item.InCount + item.OutCount
-		xLabels = append(xLabels, item.Name)
+	xLabels := make([]string, 0, len(records))
+	totalData := make([]int, 0, len(records))
+	tableRows := make([][]any, 0, len(records))
+	for i, r := range records {
+		name := r["name"].String()
+		total := r["total"].Int()
+		xLabels = append(xLabels, name)
 		totalData = append(totalData, total)
-		tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), item.Name, total})
+		tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), name, total})
 	}
-	chart := buildChart("bar", "近七天区域人流排名（Top10）", xLabels,
+	chart := buildChart("bar", "区域人流排名（Top10）", xLabels,
 		[]chartSeries{{Name: "人流量", Data: totalData}},
 		[]string{"排名", "区域", "人流量"}, tableRows)
-	answer := fmt.Sprintf("近七天人流最多的区域为「%s」，共 %d 人次。", result.Series[0].Name, result.Series[0].InCount+result.Series[0].OutCount)
+	answer := fmt.Sprintf("人流最多的区域为「%s」，共 %d 人次。", xLabels[0], totalData[0])
 	return answer, chart, nil
 }
 
-func fastPopHourlyTrendQuery(ctx context.Context, db gdb.DB) (string, string, error) {
-	from := gtime.Now().Format("Y-m-d")
-	to := gtime.Now().Format("Y-m-d") + " 23:59:59"
+func fastPopRegionProportionQuery(ctx context.Context, db gdb.DB, p ExtractedParams) (string, string, error) {
+	from, toFull := popDateRangeFromParams(ctx, p, 7)
+
+	// Try population_metric_daily first
+	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
+		DateFrom: from,
+		DateTo:   toFull,
+		GroupBy:  "region",
+	})
+	if err == nil && result != nil && len(result.Series) > 0 {
+		filtered := make([]model.PopulationAggregateSeriesItem, 0, len(result.Series))
+		for _, item := range result.Series {
+			if item.Name != "全站" && item.Name != "" {
+				filtered = append(filtered, item)
+			}
+		}
+		if len(filtered) > 0 {
+			totalAll := 0
+			for _, item := range filtered {
+				totalAll += item.InCount + item.OutCount
+			}
+			sort.Slice(filtered, func(i, j int) bool {
+				return (filtered[i].InCount + filtered[i].OutCount) > (filtered[j].InCount + filtered[j].OutCount)
+			})
+			// Top 9 + "其他" for pie chart readability
+			top := filtered
+			otherTotal := 0
+			if len(top) > 9 {
+				for _, item := range top[9:] {
+					otherTotal += item.InCount + item.OutCount
+				}
+				top = top[:9]
+			}
+			xLabels := make([]string, 0, len(top)+1)
+			totalData := make([]int, 0, len(top)+1)
+			tableRows := make([][]any, 0, len(top)+1)
+			var pctParts []string
+			for _, item := range top {
+				total := item.InCount + item.OutCount
+				pct := 0.0
+				if totalAll > 0 {
+					pct = float64(total) / float64(totalAll) * 100
+				}
+				xLabels = append(xLabels, item.Name)
+				totalData = append(totalData, total)
+				tableRows = append(tableRows, []any{item.Name, total, fmt.Sprintf("%.1f%%", pct)})
+				pctParts = append(pctParts, fmt.Sprintf("%s（%.1f%%）", item.Name, pct))
+			}
+			if otherTotal > 0 {
+				pct := float64(otherTotal) / float64(totalAll) * 100
+				xLabels = append(xLabels, "其他")
+				totalData = append(totalData, otherTotal)
+				tableRows = append(tableRows, []any{"其他", otherTotal, fmt.Sprintf("%.1f%%", pct)})
+				pctParts = append(pctParts, fmt.Sprintf("其他（%.1f%%）", pct))
+			}
+			chart := buildChart("pie", "区域人流占比", xLabels,
+				[]chartSeries{{Name: "人流量", Data: totalData}},
+				[]string{"区域", "人流量", "占比"}, tableRows)
+			answer := fmt.Sprintf("人流占比最高的区域为「%s」，占 %.1f%%。各区域占比：%s。", xLabels[0], float64(totalData[0])/float64(totalAll)*100, strings.Join(pctParts, "、"))
+			return answer, chart, nil
+		}
+	}
+
+	// Fallback: use population_tag_daily (full query, no LIMIT)
+	dateFrom := from
+	dateTo := toFull
+	if len(dateFrom) > 10 {
+		dateFrom = dateFrom[:10]
+	}
+	if len(dateTo) > 10 {
+		dateTo = dateTo[:10]
+	}
+	records, tagErr := db.Ctx(ctx).Raw(`
+SELECT COALESCE(NULLIF(area,''), '未知') AS name, SUM(label_cnt) AS total
+FROM population_tag_daily
+WHERE day >= DATE(?) AND day <= DATE(?) AND area <> '全站' AND tag = '年龄' AND type = 1
+GROUP BY name ORDER BY total DESC`, dateFrom, dateTo).All()
+	if tagErr != nil || len(records) == 0 {
+		return "当前条件下暂无分区域人流数据。", "", nil
+	}
+
+	totalAll := 0
+	for _, r := range records {
+		totalAll += r["total"].Int()
+	}
+	// Top 9 + "其他"
+	top := records
+	otherTotal := 0
+	if len(top) > 9 {
+		for _, r := range top[9:] {
+			otherTotal += r["total"].Int()
+		}
+		top = top[:9]
+	}
+	xLabels := make([]string, 0, len(top)+1)
+	totalData := make([]int, 0, len(top)+1)
+	tableRows := make([][]any, 0, len(top)+1)
+	var pctParts []string
+	for _, r := range top {
+		name := r["name"].String()
+		total := r["total"].Int()
+		pct := 0.0
+		if totalAll > 0 {
+			pct = float64(total) / float64(totalAll) * 100
+		}
+		xLabels = append(xLabels, name)
+		totalData = append(totalData, total)
+		tableRows = append(tableRows, []any{name, total, fmt.Sprintf("%.1f%%", pct)})
+		pctParts = append(pctParts, fmt.Sprintf("%s（%.1f%%）", name, pct))
+	}
+	if otherTotal > 0 {
+		pct := float64(otherTotal) / float64(totalAll) * 100
+		xLabels = append(xLabels, "其他")
+		totalData = append(totalData, otherTotal)
+		tableRows = append(tableRows, []any{"其他", otherTotal, fmt.Sprintf("%.1f%%", pct)})
+		pctParts = append(pctParts, fmt.Sprintf("其他（%.1f%%）", pct))
+	}
+	chart := buildChart("pie", "区域人流占比", xLabels,
+		[]chartSeries{{Name: "人流量", Data: totalData}},
+		[]string{"区域", "人流量", "占比"}, tableRows)
+	answer := fmt.Sprintf("人流占比最高的区域为「%s」，占 %.1f%%。各区域占比：%s。", xLabels[0], float64(totalData[0])/float64(totalAll)*100, strings.Join(pctParts, "、"))
+	return answer, chart, nil
+}
+
+func fastPopHourlyTrendQuery(ctx context.Context, db gdb.DB, p ExtractedParams) (string, string, error) {
+from := ""
+	to := ""
+
+	if p.DateFrom != "" && !p.AllDates {
+		from = p.DateFrom[:10]
+		to = from + " 23:59:59"
+		if len(p.DateTo) >= 10 {
+			to = p.DateTo[:10] + " 23:59:59"
+		}
+	} else {
+		from = gtime.Now().Format("Y-m-d")
+		to = gtime.Now().Format("Y-m-d") + " 23:59:59"
+	}
+
+	count, err := db.Ctx(ctx).Raw(
+		"SELECT COUNT(*) FROM population_metric_hourly WHERE metric_hour >= DATE(?) AND metric_hour <= DATE(?)",
+		from, to,
+	).Value()
+	if err != nil || count.Int() == 0 {
+		return p.PeriodLabel(1) + "暂无按小时人流数据。", "", nil
+	}
 
 	result, err := service.Population().Aggregate(ctx, model.PopulationAggregateQuery{
 		DateFrom: from,
@@ -1901,7 +2416,7 @@ func fastPopHourlyTrendQuery(ctx context.Context, db gdb.DB) (string, string, er
 		GroupBy:  "hour",
 	})
 	if err != nil || result == nil || len(result.Series) == 0 {
-		return "今日暂无按小时人流数据。", "", nil
+		return p.PeriodLabel(1) + "暂无按小时人流数据。", "", nil
 	}
 
 	xLabels := make([]string, 0, len(result.Series))
@@ -1923,18 +2438,12 @@ func fastPopHourlyTrendQuery(ctx context.Context, db gdb.DB) (string, string, er
 			peakHour = item.Name
 		}
 	}
-	chart := buildChart("line", "今日人流按小时趋势", xLabels,
+	chart := buildChart("line", p.PeriodLabel(1)+"人流按小时趋势", xLabels,
 		[]chartSeries{{Name: "进入人数", Data: inData}, {Name: "离开人数", Data: outData}},
 		[]string{"时段", "进入", "离开", "合计"}, tableRows)
-	answer := fmt.Sprintf("今日人流总计 %d 人次，高峰时段为%s（%d人次）。", totalAll, peakHour, peakCount)
+	answer := fmt.Sprintf("%s人流总计 %d 人次，高峰时段为%s（%d人次）。", p.PeriodLabel(1), totalAll, peakHour, peakCount)
 	return answer, chart, nil
 }
-
-
-
-
-
-
 
 // ---- Grid fast paths (via direct SQL on case_list) ----
 
@@ -1985,7 +2494,6 @@ func fastGridQuery(ctx context.Context, kind fastPathKind) (string, string, erro
 
 // ---- Population hourly trend fast path ----
 
-
 // ---- Grid case type distribution fast path ----
 
 func fastGridCaseTypeDistQuery(ctx context.Context, db gdb.DB) (string, string, error) {
@@ -2022,49 +2530,117 @@ type gridQuerySourceInfo struct {
 	RegionExpr   string
 	CaseTypeExpr string
 	ClosedWhere  string
+	HasCommunity bool
+}
+
+// Pre-validated source configs — only these values are ever interpolated into SQL.
+var gridQuerySourceConfigs = map[string]gridQuerySourceInfo{
+	"grid_case_record": {
+		Table:        "grid_case_record",
+		RegionExpr:   "region",
+		CaseTypeExpr: "COALESCE(NULLIF(case_type2,''), NULLIF(case_type1,''))",
+		ClosedWhere:  "(LOWER(COALESCE(case_status, '')) IN ('closed','done','finished','resolved') OR case_status LIKE '%结案%' OR case_status LIKE '%办结%')",
+		HasCommunity: true,
+	},
+	"case_list": {
+		Table:        "case_list",
+		RegionExpr:   "region",
+		CaseTypeExpr: "case_type",
+		ClosedWhere:  "pending_step LIKE '%结案%'",
+		HasCommunity: false,
+	},
 }
 
 func gridQuerySource(ctx context.Context, db gdb.DB) gridQuerySourceInfo {
 	count, err := db.Model("grid_case_record").Ctx(ctx).Count()
 	if err == nil && count > 0 {
-		return gridQuerySourceInfo{
-			Table:        "grid_case_record",
-			RegionExpr:   "region",
-			CaseTypeExpr: "COALESCE(NULLIF(case_type2,''), NULLIF(case_type1,''))",
-			ClosedWhere:  "(LOWER(COALESCE(case_status, '')) IN ('closed','done','finished','resolved') OR case_status LIKE '%结案%' OR case_status LIKE '%办结%')",
-		}
+		return gridQuerySourceConfigs["grid_case_record"]
 	}
-	return gridQuerySourceInfo{
-		Table:        "case_list",
-		RegionExpr:   "region",
-		CaseTypeExpr: "case_type",
-		ClosedWhere:  "pending_step LIKE '%结案%'",
-	}
+	return gridQuerySourceConfigs["case_list"]
 }
 
-func fastGridQueryStable(ctx context.Context, kind fastPathKind) (string, string, error) {
+func fastGridQueryStable(ctx context.Context, kind fastPathKind, p ExtractedParams) (string, string, error) {
 	db := g.DB("master")
 	source := gridQuerySource(ctx, db)
+	if _, ok := gridQuerySourceConfigs[source.Table]; !ok {
+		return "数据源配置异常。", "", nil
+	}
+
+	dateLabel := "全部日期"
+	dateCond := ""
+	dateArgs := make([]any, 0, 2)
+	if p.AllDates {
+		dateLabel = "全部日期"
+	} else if p.DateFrom != "" && !p.AllDates {
+		dateLabel = fmt.Sprintf("%s至%s", p.DateFrom[:10], p.DateTo[:10])
+		dateCond = " AND report_time >= ? AND report_time <= ?"
+		dateArgs = append(dateArgs, p.DateFrom, p.DateTo)
+	}
+
+	regionCond := ""
+	regionArgs := make([]any, 0, 2)
+	regionLabel := ""
+	if p.RegionName != "" {
+		regionCond = fmt.Sprintf(" AND %s LIKE ?", source.RegionExpr)
+		regionArgs = append(regionArgs, "%"+p.RegionName+"%")
+		regionLabel = p.RegionName
+	}
+
+	label := dateLabel
+	if regionLabel != "" {
+		label += regionLabel
+	}
+
+	dimCond := ""
+	dimArgs := make([]any, 0, 4)
+	if source.HasCommunity && p.Community != "" {
+		dimCond += " AND community LIKE ?"
+		dimArgs = append(dimArgs, "%"+p.Community+"%")
+		label += p.Community
+	}
+	if source.HasCommunity && p.GridName != "" {
+		dimCond += " AND grid_name LIKE ?"
+		dimArgs = append(dimArgs, "%"+p.GridName+"%")
+	}
+	if p.CaseType != "" {
+		dimCond += fmt.Sprintf(" AND %s LIKE ?", source.CaseTypeExpr)
+		dimArgs = append(dimArgs, "%"+p.CaseType+"%")
+		label += p.CaseType
+	}
+
+	whereClause := dateCond + regionCond + dimCond
+	whereArgs := append(dateArgs, append(regionArgs, dimArgs...)...)
+
 	switch kind {
 	case fpGridCaseCount:
-		count, err := db.Model(source.Table).Ctx(ctx).Count()
+		query := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM %s WHERE 1=1%s", source.Table, whereClause)
+		record, err := db.Ctx(ctx).Raw(query, whereArgs...).One()
 		if err != nil {
 			return "", "", err
 		}
-		return fmt.Sprintf("当前案件总数为 %d 件。", count), "", nil
+		count := record["cnt"].Int()
+		return fmt.Sprintf("%s案件总数为 %d 件。", label, count), "", nil
 	case fpGridCloseRate:
-		total, _ := db.Model(source.Table).Ctx(ctx).Count()
-		closed, _ := db.Model(source.Table).Ctx(ctx).Where(source.ClosedWhere).Count()
+		totalQuery := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM %s WHERE 1=1%s", source.Table, whereClause)
+		totalRecord, err := db.Ctx(ctx).Raw(totalQuery, whereArgs...).One()
+		if err != nil {
+			return "", "", err
+		}
+		total := totalRecord["cnt"].Int()
+		closedQuery := fmt.Sprintf("SELECT COUNT(*) AS cnt FROM %s WHERE %s%s", source.Table, source.ClosedWhere, whereClause)
+		closedRecord, err := db.Ctx(ctx).Raw(closedQuery, whereArgs...).One()
+		if err != nil {
+			return "", "", err
+		}
+		closed := closedRecord["cnt"].Int()
 		rate := 0.0
 		if total > 0 {
 			rate = float64(closed) / float64(total) * 100
 		}
-		return fmt.Sprintf("案件总数 %d 件，已结案 %d 件，结案率 %.1f%%。", total, closed, rate), "", nil
+		return fmt.Sprintf("%s案件总数 %d 件，已结案 %d 件，结案率 %.1f%%。", label, total, closed, rate), "", nil
 	case fpGridRegionRank:
-		records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
-SELECT COALESCE(NULLIF(%s,''), '未知') AS name, COUNT(*) AS total
-FROM %s
-GROUP BY name ORDER BY total DESC LIMIT 10`, source.RegionExpr, source.Table)).All()
+		rankQuery := fmt.Sprintf("\nSELECT COALESCE(NULLIF(%s,''), '未知') AS name, COUNT(*) AS total\nFROM %s\nWHERE 1=1%s\n\tGROUP BY name ORDER BY total DESC LIMIT 10", source.RegionExpr, source.Table, whereClause)
+		records, err := db.Ctx(ctx).Raw(rankQuery, whereArgs...).All()
 		if err != nil || len(records) == 0 {
 			return "暂无区域案件数据。", "", nil
 		}
@@ -2076,16 +2652,14 @@ GROUP BY name ORDER BY total DESC LIMIT 10`, source.RegionExpr, source.Table)).A
 			totalData = append(totalData, r["total"].Int())
 			tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), r["name"].String(), r["total"].Int()})
 		}
-		chart := buildChart("bar", "区域案件数量排名 Top10", xLabels,
+		chart := buildChart("bar", label+"区域案件数量排名 Top10", xLabels,
 			[]chartSeries{{Name: "案件数", Data: totalData}},
 			[]string{"排名", "区域", "案件数"}, tableRows)
-		answer := fmt.Sprintf("案件最多的区域为「%s」，共 %d 件。", records[0]["name"].String(), records[0]["total"].Int())
+		answer := fmt.Sprintf("%s案件最多的区域为「%s」，共 %d 件。", dateLabel, records[0]["name"].String(), records[0]["total"].Int())
 		return answer, chart, nil
 	case fpGridCaseTypeDist:
-		records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
-SELECT COALESCE(NULLIF(%s,''), '未分类') AS name, COUNT(*) AS total
-FROM %s
-GROUP BY name ORDER BY total DESC LIMIT 10`, source.CaseTypeExpr, source.Table)).All()
+		typeQuery := fmt.Sprintf("\nSELECT COALESCE(NULLIF(%s,''), '未分类') AS name, COUNT(*) AS total\nFROM %s\nWHERE 1=1%s\n\tGROUP BY name ORDER BY total DESC LIMIT 10", source.CaseTypeExpr, source.Table, whereClause)
+		records, err := db.Ctx(ctx).Raw(typeQuery, whereArgs...).All()
 		if err != nil || len(records) == 0 {
 			return "暂无案件类型分布数据。", "", nil
 		}
@@ -2102,10 +2676,11 @@ GROUP BY name ORDER BY total DESC LIMIT 10`, source.CaseTypeExpr, source.Table))
 			totalData = append(totalData, t)
 			tableRows = append(tableRows, []any{fmt.Sprintf("%d", i+1), r["name"].String(), t, fmt.Sprintf("%.1f%%", float64(t)/float64(allTotal)*100)})
 		}
-		chart := buildChart("pie", "案件类型分布 Top10", xLabels,
+		chart := buildChart("pie", label+"案件类型分布 Top10", xLabels,
 			[]chartSeries{{Name: "案件数", Data: totalData}},
 			[]string{"排名", "案件类型", "案件数", "占比"}, tableRows)
-		answer := fmt.Sprintf("案件最多的类型为「%s」，共 %d 件，占比 %.1f%%。",
+		answer := fmt.Sprintf("%s案件最多的类型为「%s」，共 %d 件，占比 %.1f%%。",
+			dateLabel,
 			records[0]["name"].String(), records[0]["total"].Int(), float64(records[0]["total"].Int())/float64(allTotal)*100)
 		return answer, chart, nil
 	}

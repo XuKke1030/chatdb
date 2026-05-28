@@ -3,7 +3,6 @@ package traffic
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
@@ -26,14 +25,16 @@ func (s *sTraffic) RefreshAggregates(ctx context.Context, dateFrom string, dateT
 	return s.refreshOriginDaily(ctx, from, to)
 }
 
+const defaultRefreshDays = 7
+
 func normalizeAggregateWindow(dateFrom string, dateTo string) (string, string) {
 	from := normalizeQueryTime(dateFrom, false)
 	to := normalizeQueryTime(dateTo, true)
 	if from == "" {
-		from = time.Now().AddDate(0, 0, -7).Format("2006-01-02 00:00:00")
+		from = gtime.Now().AddDate(0, 0, -defaultRefreshDays).Format("Y-m-d H:i:s")
 	}
 	if to == "" {
-		to = time.Now().Format("2006-01-02 23:59:59")
+		to = gtime.Now().Format("Y-m-d") + " 23:59:59"
 	}
 	return from, to
 }
@@ -250,6 +251,21 @@ func (s *sTraffic) SyncHolidaysFromCode(ctx context.Context) error {
 	db := g.DB("master")
 	now := int(gtime.Timestamp())
 
+	for dateStr, name := range chinaHolidayDates2025 {
+		_, _ = db.Exec(ctx, `
+INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
+VALUES (?, ?, 'holiday')
+ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
+			dateStr, name)
+	}
+	for dateStr, name := range chinaAdjustedWorkdays2025 {
+		_, _ = db.Exec(ctx, `
+INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
+VALUES (?, ?, 'workday')
+ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
+			dateStr, name)
+	}
+
 	for dateStr, name := range chinaHolidayDates2026 {
 		_, _ = db.Exec(ctx, `
 INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
@@ -266,6 +282,45 @@ ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALU
 	}
 	_ = now
 	return nil
+}
+
+var chinaHolidayDates2025 = map[string]string{
+	"2025-01-01": "元旦",
+	"2025-01-28": "春节",
+	"2025-01-29": "春节",
+	"2025-01-30": "春节",
+	"2025-01-31": "春节",
+	"2025-02-01": "春节",
+	"2025-02-02": "春节",
+	"2025-02-03": "春节",
+	"2025-02-04": "春节",
+	"2025-04-04": "清明节",
+	"2025-04-05": "清明节",
+	"2025-04-06": "清明节",
+	"2025-05-01": "劳动节",
+	"2025-05-02": "劳动节",
+	"2025-05-03": "劳动节",
+	"2025-05-04": "劳动节",
+	"2025-05-05": "劳动节",
+	"2025-05-31": "端午节",
+	"2025-06-01": "端午节",
+	"2025-06-02": "端午节",
+	"2025-10-01": "国庆节",
+	"2025-10-02": "国庆节",
+	"2025-10-03": "国庆节",
+	"2025-10-04": "国庆节",
+	"2025-10-05": "国庆节",
+	"2025-10-06": "中秋节",
+	"2025-10-07": "国庆节",
+	"2025-10-08": "国庆节",
+}
+
+var chinaAdjustedWorkdays2025 = map[string]string{
+	"2025-01-26": "春节调休工作日",
+	"2025-02-08": "春节调休工作日",
+	"2025-04-27": "劳动节调休工作日",
+	"2025-09-28": "国庆节调休工作日",
+	"2025-10-11": "国庆节调休工作日",
 }
 
 var chinaHolidayDates2026 = map[string]string{

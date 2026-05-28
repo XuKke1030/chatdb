@@ -348,8 +348,10 @@ func (s *sAlert) generateThresholdAlerts(ctx context.Context, topics []string) [
 }
 
 func trafficThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
-	today, okToday := dailyTrafficMetric(ctx, "CURDATE()")
-	yesterday, okYesterday := dailyTrafficMetric(ctx, "DATE_SUB(CURDATE(), INTERVAL 1 DAY)")
+	todayStr := gtime.Now().Format("Y-m-d")
+	yesterdayStr := gtime.Now().AddDate(0, 0, -1).Format("Y-m-d")
+	today, okToday := dailyTrafficMetric(ctx, todayStr)
+	yesterday, okYesterday := dailyTrafficMetric(ctx, yesterdayStr)
 	if !okToday || !okYesterday {
 		return nil
 	}
@@ -367,8 +369,10 @@ func trafficThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
 }
 
 func populationThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
-	today, okToday := dailyPopulationMetric(ctx, "CURDATE()")
-	yesterday, okYesterday := dailyPopulationMetric(ctx, "DATE_SUB(CURDATE(), INTERVAL 1 DAY)")
+	todayStr := gtime.Now().Format("Y-m-d")
+	yesterdayStr := gtime.Now().AddDate(0, 0, -1).Format("Y-m-d")
+	today, okToday := dailyPopulationMetric(ctx, todayStr)
+	yesterday, okYesterday := dailyPopulationMetric(ctx, yesterdayStr)
 	if !okToday || !okYesterday {
 		return nil
 	}
@@ -403,10 +407,10 @@ func gridThresholdAlerts(ctx context.Context, now int) []model.AlertItem {
 	return alerts
 }
 
-func dailyTrafficMetric(ctx context.Context, dateExpr string) (map[string]float64, bool) {
+func dailyTrafficMetric(ctx context.Context, dateStr string) (map[string]float64, bool) {
 	record, err := g.DB("master").Model("traffic_metric_daily").Ctx(ctx).
 		Fields("COALESCE(SUM(total),0) AS total, COALESCE(SUM(hk_macau_count),0) AS hk_macau_count, COALESCE(SUM(foreign_count),0) AS foreign_count").
-		Where(fmt.Sprintf("metric_date = %s", dateExpr)).
+		Where("metric_date = DATE(?)", dateStr).
 		One()
 	if err != nil || record == nil {
 		return nil, false
@@ -418,10 +422,10 @@ func dailyTrafficMetric(ctx context.Context, dateExpr string) (map[string]float6
 	}, true
 }
 
-func dailyPopulationMetric(ctx context.Context, dateExpr string) (map[string]float64, bool) {
+func dailyPopulationMetric(ctx context.Context, dateStr string) (map[string]float64, bool) {
 	record, err := g.DB("master").Model("population_metric_daily").Ctx(ctx).
 		Fields("COALESCE(SUM(in_count),0) AS in_count, COALESCE(SUM(out_count),0) AS out_count, COALESCE(SUM(floating_population_count),0) AS floating_population_count").
-		Where(fmt.Sprintf("metric_date = %s", dateExpr)).
+		Where("metric_date = DATE(?)", dateStr).
 		One()
 	if err != nil || record == nil {
 		return nil, false

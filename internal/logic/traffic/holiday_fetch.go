@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 type holidayAPIResponse struct {
@@ -59,7 +59,7 @@ ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALU
 
 func autoSyncHolidays(ctx context.Context) {
 	s := NewTraffic()
-	currentYear := time.Now().Year()
+	currentYear := gtime.Now().Year()
 	for _, y := range []int{currentYear, currentYear + 1} {
 		if err := s.FetchHolidaysFromAPI(ctx, y); err != nil {
 			g.Log().Infof(ctx, "autoSyncHolidays: API fetch failed for year %d: %v", y, err)

@@ -20,9 +20,10 @@ func (c *ControllerV1) AdminGridImportTemplate(ctx context.Context, req *v1.Admi
 	f := excelize.NewFile()
 	sheet := "Sheet1"
 	headers := []string{"责任单位", "案件编号", "案件来源", "上报时间", "待办环节", "案件类别", "所属区域", "案件位置", "问题描述"}
+	today := gtime.Now().Format("Y-m-d")
 	examples := [][]string{
-		{"XX街道办", "CASE-2026-001", "12345热线", "2026-05-01 09:30:00", "待处理", "市容环卫", "XX社区", "XX路与XX路交叉口", "路面垃圾堆积"},
-		{"XX街道办", "CASE-2026-002", "网格巡查", "2026-05-02 14:00:00", "处置中", "市政设施", "YY社区", "YY路28号", "路灯损坏"},
+		{"XXè¡éå", "CASE-2026-001", "12345ç­çº¿", today + " 09:30:00", "å¾å¤ç", "å¸å®¹ç¯å«", "XXç¤¾åº", "XXè·¯ä¸XXè·¯äº¤åå£", "è·¯é¢åå¾å ç§¯"},
+		{"XXè¡éå", "CASE-2026-002", "ç½æ ¼å·¡æ¥", today + " 14:00:00", "å¤ç½®ä¸­", "å¸æ¿è®¾æ½", "YYç¤¾åº", "YYè·¯28å·", "è·¯ç¯æå"},
 	}
 	styleID, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true},

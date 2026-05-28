@@ -83,10 +83,11 @@ func TestStreamState_TransitionToClarification(t *testing.T) {
 
 	s := &sAiChat{}
 	respChan := make(chan any, 20)
+	closer := newChanCloser(respChan)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	s.AiChatStreamOut(ctx, respChan, stream, cancel)
+	s.AiChatStreamOut(ctx, closer, stream, cancel)
 
 	items := collectSSE(respChan, 3*time.Second)
 	var found bool
@@ -115,10 +116,11 @@ func TestStreamState_TransitionToNormal(t *testing.T) {
 
 	s := &sAiChat{}
 	respChan := make(chan any, 20)
+	closer := newChanCloser(respChan)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	s.AiChatStreamOut(ctx, respChan, stream, cancel)
+	s.AiChatStreamOut(ctx, closer, stream, cancel)
 
 	items := collectSSE(respChan, 3*time.Second)
 	for _, item := range items {
@@ -144,10 +146,11 @@ func TestStreamState_ErrorEvent(t *testing.T) {
 
 	s := &sAiChat{}
 	respChan := make(chan any, 20)
+	closer := newChanCloser(respChan)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	s.AiChatStreamOut(ctx, respChan, sr, cancel)
+	s.AiChatStreamOut(ctx, closer, sr, cancel)
 
 	items := collectSSE(respChan, 3*time.Second)
 	var hasError bool

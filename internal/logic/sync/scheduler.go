@@ -2,10 +2,13 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/logic/aidgp"
+	"ai-chat-sql/internal/model"
+	"ai-chat-sql/internal/service"
 
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
@@ -69,6 +72,13 @@ func runScheduledSyncs(ctx context.Context) {
 		if syncErr != nil {
 			g.Log().Warningf(ctx, "scheduled sync failed for %s: %v", ds.sourceType, syncErr)
 			statusVal = "error"
+			service.Alert().AddAlert(ctx, model.AlertItem{
+				Topic:      ds.sourceType,
+				Title:      fmt.Sprintf("%s数据同步失败", ds.sourceType),
+				Content:    fmt.Sprintf("AIDGP 定时同步失败: %s", syncErr.Error()),
+				Level:      "warning",
+				CreateTime: now,
+			})
 		}
 
 		_, _ = g.DB("master").Model("admin_data_source").Ctx(ctx).

@@ -4,6 +4,11 @@ server:
   address: ":8000"
   mode: "debug"
 
+cors:
+  # 生产环境应设置具体来源，如 ["https://chatdb.example.com"]
+  # 空数组表示允许所有来源（开发模式）
+  allowOrigins: []
+
 ai:
   openai:
     baseUrl: "https://api.openai.com/v1"

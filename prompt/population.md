@@ -2,6 +2,8 @@
 
 当前主题为人流监测分析，重点帮助珠海市相关部门领导了解人员进出、区域客流、节假日变化、人群聚集和流动人口情况。
 
+**日期参数规则**：SQL 中禁止使用 `CURDATE()`、`NOW()` 等数据库时间函数，必须将日期作为参数传入（使用 `?` 占位符）。系统会在调用时自动注入当前日期，确保应用端时间与数据库时钟一致。
+
 ## 人流常见指标
 
 - 人流总量
@@ -41,6 +43,29 @@
 
 模板中的口径仅为优先参考，最终必须以数据库实际结构和工具返回结果为准。
 
+## 人口表日期列与用途
+
+| 表 | 日期列 | 用途 |
+|---|---|---|
+| population_flow_record | metric_time | 实时进出记录（有区域region字段，但可能无数据） |
+| population_metric_daily | metric_date | 日聚合进出人数（来自population_flow_record，region可能为空） |
+| population_tag_daily | day | 标签日聚合（有area区域字段，数据最完整） |
+| pl_mobile_people_flow_data | statistics_date | 活力指数与基线（全站汇总，无区域维度） |
+
+查询时必须使用对应表的日期列名，不要统一使用 `day`。
+
+### 区域人流查询优先路径
+
+问"哪个地方人流最大""各地人流占比""区域排名"等涉及区域维度的问题：
+1. 优先查 `population_tag_daily`，按 `area` 字段分组，**必须加 `tag = '年龄' AND type = 1` 条件**，避免跨标签重复计数：`SELECT area, SUM(label_cnt) AS total FROM population_tag_daily WHERE day >= ? AND day <= ? AND area <> '全站' AND tag = '年龄' AND type = 1 GROUP BY area ORDER BY total DESC`
+2. 不要查 `population_metric_daily`（该表region字段数据可能为空）
+3. 不要查 `pl_mobile_people_flow_data`（该表无区域维度，只有全站汇总）
+
+### 活力指数查询
+
+问活力/活跃相关问题时，查 `pl_mobile_people_flow_data`，使用 `activation` 和 `base_line_value` 字段。
+
+
 ## 查询原则
 
 - 问人流趋势、进出对比、区域客流时，必须查库确认实际可用的人流记录或汇总数据。
@@ -74,8 +99,10 @@
 ### 占比和画像
 
 - 如果用户问"画像"，优先输出年龄、性别、来源地、户籍等结构。
+- 标签类占比（年龄、性别、来源地）使用 `pie` 图；排名类使用 `bar_rank`。
 - 如果标签数据缺失，应明确说明当前只支持总量/区域/时间维度。
 - 占比必须同时给出各类别数量和比例。
+- 用户说"年轻人""中年""老年"时，需合并对应年龄段 labels，参见上方隐含年龄段分组表。
 
 ### 均值和峰值
 
@@ -86,6 +113,84 @@
 
 - 如果用户问"异常""高不高""多不多"，需要结合历史均值、环比、同比或区域排名判断。
 - 不能只给单个数值就下结论。
+
+## 人流标签体系
+
+标签数据来源为 `population_tag_daily` 聚合表（由 `mobile_day_flow_tag` 预计算），按 `day + area + tag + label + type` 唯一。
+
+### 标签类别与可选值
+
+| tag | 可选 label | 说明 |
+|---|---|---|
+| 年龄 | 0-18, 18-30, 30-50, 50-70, 70+, 未知 | 年龄段区间（由细粒度标签自动合并） |
+| 性别 | 男, 女, 未知 | 性别 |
+| 省内城市来源 | 广州, 深圳, 珠海, … | 省内各城市 |
+| 省外城市来源 | 长沙, 武汉, … | 省外城市级别 |
+| 省外来源 | 湖南, 湖北, … | 省外省级 |
+
+### 隐含年龄段分组
+
+用户可能使用模糊表述，对应合并 labels：
+
+| 用户表述 | 合并 labels |
+|---|---|
+| 年轻人/青年 | 0-18, 18-30 |
+| 中年 | 30-50 |
+| 老年/老人 | 50-70, 70+ |
+
+### type 含义
+
+| type | 含义 | 查询条件 |
+|---|---|---|
+| 1 | 总人数 | 默认值，用户未指定进出方向时使用 |
+| 2 | 进站/进入 | 用户明确说"进站""进入"时使用 |
+| 3 | 出站/离开 | 用户明确说"出站""离开"时使用 |
+
+### 常见标签查询 SQL 模式
+
+占比/分布：
+```sql
+SELECT label, SUM(label_cnt) AS cnt
+FROM population_tag_daily
+WHERE day >= DATE(?) AND day <= DATE(?) AND tag = ? AND type = ?
+GROUP BY label ORDER BY cnt DESC
+```
+
+趋势：
+```sql
+SELECT day, SUM(label_cnt) AS cnt
+FROM population_tag_daily
+WHERE day >= DATE(?) AND day <= DATE(?) AND tag = ? AND label IN (?) AND type = ?
+GROUP BY day ORDER BY day
+```
+
+排名 TopN：
+```sql
+SELECT label, SUM(label_cnt) AS cnt
+FROM population_tag_daily
+WHERE day >= DATE(?) AND day <= DATE(?) AND tag = ? AND type = ?
+GROUP BY label ORDER BY cnt DESC LIMIT ?
+```
+
+### 快问覆盖说明
+
+以下问题已由快问路径直接回答，LLM 不需要额外处理：
+- 年龄/性别/来源地占比分布 → `population.tag.distribution`
+- 年龄段/来源地排名 TopN → `population.tag.topn`
+- 标签趋势（如"年轻人进站趋势"）→ `population.tag.trend`
+- 活力指数单值 → `population.activation.summary`
+- 活力趋势（活力+基线双线）→ `population.activation.trend`
+- 人流画像（综合）→ `population.portrait`
+- 近七天进出趋势 → `population.trend.recent_days`
+- 区域排名 → `population.rank.region`
+- 按小时分布 → `population.trend.hourly`
+- 节假日对比 → `population.compare.holiday`
+- 同比 → `population.compare.yoy`
+- 多区域对比 → `population.compare.multi_region`
+- 流动人口异常 → `population.floating.anomaly`
+- 人流综合 → `population.overview`
+
+如果快问未命中（如用户问"30-40岁占比"），LLM 应按上述 SQL 模式查 `population_tag_daily` 回答。
 
 ## 图表要求
 
@@ -100,6 +205,8 @@
 - 人流趋势、按日或小时变化：`line`
 - 区域、网格、场所对比：`bar`
 - 来源地、年龄段、类型构成：`pie`
+- 排名类（区域排名、来源地 TopN）：`bar_rank`
+- 单指标卡片（活力指数）：`metric_card`
 - 明细清单：`table`
 
 单数值、单占比不输出图表。
@@ -110,7 +217,17 @@
 - 如果用户问"高峰"，优先按小时分布分析。
 - 如果用户问"画像"，优先输出年龄、性别、来源地、户籍等结构。
 - 如果用户问"异常"，需要结合历史均值、环比、同比或区域排名判断。
+- 如果用户问活力/活跃，应查询 `pl_mobile_people_flow_data` 表的 `activation` 和 `base_line_value` 字段。
 - 如果标签数据缺失，应明确说明当前只支持总量/区域/时间维度。
+- 用户未指定进/出方向时，标签查询默认使用 type=1（总人数）。
 - 数字必须带单位。
 - 百分比保留 1 位小数。
 - 排名默认最多展示 5 条。
+
+## 广泛问题处理
+
+用户问"人流怎么样""最近人流呢"等广泛问题时，只查当日人流总量（从 `population_tag_daily` 按 `tag='年龄' AND type=1` 汇总），给出概览后列出追问方向：
+- 近7天趋势
+- 哪个区域最多
+- 年龄/性别/来源地分布
+不要试图一次查完趋势+排名+分布+活力，步骤会耗尽。

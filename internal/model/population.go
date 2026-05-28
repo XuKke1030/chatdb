@@ -35,3 +35,26 @@ type PopulationYoYItem struct {
 	PriorVal   int     `json:"priorVal"`
 	ChangePct  float64 `json:"changePct"`
 }
+
+type TagDistributionQuery struct {
+	DateFrom string   // Y-m-d
+	DateTo   string   // Y-m-d
+	AllDates bool     // true时不加日期限制
+	Tag      string   // 年龄/性别/省内城市来源/省外城市来源/省外来源
+	Type     int      // 0=不区分, 1=总, 2=进, 3=出
+	Area     string   // 区域筛选，空=全部
+	Labels   []string // 指定标签值筛选，空=全部
+}
+
+type TagDistributionItem struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+	Pct   string `json:"pct"`
+}
+
+type TagDistributionResult struct {
+	Tag      string                `json:"tag"`
+	Type     int                   `json:"type"`
+	Total    int                   `json:"total"`
+	Items    []TagDistributionItem `json:"items"`
+}

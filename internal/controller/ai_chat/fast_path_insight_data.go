@@ -59,7 +59,12 @@ func extractInsightData(ctx context.Context, kind fastPathKind, conclusion strin
 		data["dailyAvg"] = firstOr(nums, "0")
 
 	case fpTrafficHkMacau:
-		data["hkCount"] = firstOr(nums, "0")
+		// nums: [total, hkCount, hkPct, mainlandCount, mainlandPct, ...]
+		if len(nums) >= 2 {
+			data["hkCount"] = nums[1]
+		} else {
+			data["hkCount"] = firstOr(nums, "0")
+		}
 		if r, ok := data["hkRatio"]; ok {
 			pct, _ := strconv.ParseFloat(r, 64)
 			if pct > metricThreshold(ctx, "traffic", "hk_macau_ratio_pct", hkMacauHighRatioPct) {
@@ -185,6 +190,19 @@ func extractInsightData(ctx context.Context, kind fastPathKind, conclusion strin
 		data["topType"] = extractQuotedName(conclusion)
 		data["topPct"] = extractPct(conclusion)
 
+	case fpGridAvgHandle:
+		data["top_type"] = extractQuotedName(conclusion)
+		data["avg_hours"] = firstOr(nums, "0")
+		// Extract last quoted name for bottom_type
+		quoteRe := regexp.MustCompile(`「([^」]+)」`)
+		allQuotes := quoteRe.FindAllStringSubmatch(conclusion, -1)
+		if len(allQuotes) > 1 {
+			data["bottom_type"] = allQuotes[len(allQuotes)-1][1]
+		}
+		if len(nums) > 1 {
+			data["bottom_hours"] = nums[len(nums)-1]
+		}
+
 	case fpTrafficDwellTop:
 		data["top_plate"] = extractQuotedName(conclusion)
 		dwellRe := regexp.MustCompile(`(\d+)\s*小时`)
@@ -229,10 +247,197 @@ func extractInsightData(ctx context.Context, kind fastPathKind, conclusion strin
 			data["max_diff"] = "—"
 		}
 
+	case fpPopTagDistribution:
+		data["tag"] = "年龄"
+		if strings.Contains(conclusion, "性别") {
+			data["tag"] = "性别"
+		} else if strings.Contains(conclusion, "来源") {
+			data["tag"] = "来源地"
+		}
+		data["top_label"] = extractQuotedName(conclusion)
+		data["top_pct"] = extractPct(conclusion)
+		data["change_dir"] = "持平"
+		if strings.Contains(conclusion, "增长") || strings.Contains(conclusion, "上升") {
+			data["change_dir"] = "上升"
+		} else if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
+			data["change_dir"] = "下降"
+		}
+
+	case fpPopTagTopN:
+		data["tag"] = "省外来源"
+		if strings.Contains(conclusion, "年龄") {
+			data["tag"] = "年龄"
+		} else if strings.Contains(conclusion, "性别") {
+			data["tag"] = "性别"
+		} else if strings.Contains(conclusion, "来源") {
+			data["tag"] = "来源地"
+		}
+		data["top_label"] = extractQuotedName(conclusion)
+		data["top_count"] = firstOr(nums, "0")
+		data["top_pct"] = extractPct(conclusion)
+		// Top3合计占比：取所有百分比数值，前三相加
+		allPcts := extractAllPcts(conclusion)
+		top3Sum := 0.0
+		for i := 0; i < 3 && i < len(allPcts); i++ {
+			v, _ := strconv.ParseFloat(allPcts[i], 64)
+			top3Sum += v
+		}
+		if top3Sum > 0 {
+			data["top3_pct"] = formatFloat(top3Sum)
+		}
+
+	case fpPopTagTrend:
+		data["top_label"] = extractQuotedName(conclusion)
+		data["trend_dir"] = "平稳"
+		if strings.Contains(conclusion, "上升") {
+			data["trend_dir"] = "上升"
+		} else if strings.Contains(conclusion, "下降") {
+			data["trend_dir"] = "下降"
+		}
+		data["change_pct"] = extractPct(conclusion)
+
+	case fpPopActivationSummary:
+		data["activation"] = firstOr(nums, "0")
+		data["deviation_desc"] = "与基线基本持平"
+		data["is_anomaly"] = "活力处于正常范围"
+		data["deviation_pct"] = "0"
+		devRe := regexp.MustCompile(`偏离([+-]?[\d.]+)%`)
+		if m := devRe.FindStringSubmatch(conclusion); len(m) > 1 {
+			data["deviation_pct"] = m[1]
+		}
+		if strings.Contains(conclusion, "显著高于") {
+			data["deviation_desc"] = "显著高于基线"
+			data["is_anomaly"] = "活力异常偏高，需关注"
+		} else if strings.Contains(conclusion, "低于") {
+			data["deviation_desc"] = "低于基线"
+			data["is_anomaly"] = "活力偏低，需排查原因"
+		}
+
+	case fpPopActivationTrend:
+		data["trend_dir"] = "平稳"
+		if strings.Contains(conclusion, "上升") {
+			data["trend_dir"] = "上升"
+		} else if strings.Contains(conclusion, "下降") {
+			data["trend_dir"] = "下降"
+		}
+		data["activation_latest"] = firstOr(nums, "0")
+		data["baseline_latest"] = firstOr(nums[1:], "0")
+		// Extract crossover point from conclusion text
+		crossRe := regexp.MustCompile(`(\d{4}-\d{2}-\d{2})(上穿基线|下穿基线)`)
+		if m := crossRe.FindStringSubmatch(conclusion); len(m) > 2 {
+			data["crossover_point"] = m[1] + m[2]
+		} else {
+			data["crossover_point"] = "近期无基线交叉"
+		}
+
+	case fpPopPortrait:
+		data["all_count"] = firstOr(nums, "0")
+		data["activation"] = firstOr(nums[1:], "0")
+		data["deviation_desc"] = "与基线基本持平"
+		if strings.Contains(conclusion, "显著高于") {
+			data["deviation_desc"] = "显著高于基线"
+		} else if strings.Contains(conclusion, "低于") {
+			data["deviation_desc"] = "低于基线"
+		}
+		data["age_top_label"] = extractQuotedName(conclusion)
+		data["age_top_pct"] = extractPct(conclusion)
+		// Extract second quoted name for origin top
+		rest := conclusion
+		if idx := strings.Index(conclusion, "占比"); idx > 0 {
+			rest = conclusion[idx+6:]
+		}
+		data["origin_top_label"] = extractQuotedName(rest)
+		data["origin_top_pct"] = extractPct(rest)
+
 	case fpPopFloatingAnomaly:
 		data["anomaly_count"] = firstOr(nums, "0")
 		data["top_region"] = extractQuotedName(conclusion)
 		data["top_pct"] = extractPct(conclusion)
+
+	case fpTrafficInOutRatio:
+		data["inCount"] = firstOr(nums, "0")
+		data["outCount"] = nthOr(nums, 1, "0")
+		inVal, _ := strconv.Atoi(data["inCount"])
+		outVal, _ := strconv.Atoi(data["outCount"])
+		total := inVal + outVal
+		if total > 0 {
+			data["inPct"] = fmt.Sprintf("%.1f", float64(inVal)/float64(total)*100)
+			data["outPct"] = fmt.Sprintf("%.1f", float64(outVal)/float64(total)*100)
+		} else {
+			data["inPct"] = "0"
+			data["outPct"] = "0"
+		}
+
+	case fpTrafficMultiGateCompare:
+		data["top3Pct"] = extractPct(conclusion)
+
+	case fpTrafficHkMacauYoY:
+		data["yoyPct"] = extractPct(conclusion)
+		if pctVal, err := strconv.ParseFloat(data["yoyPct"], 64); err == nil {
+			if pctVal >= metricThreshold(ctx, "traffic", "hk_macau_yoy_pct", 20.0) {
+				data["yoyLevel"] = "显著"
+			} else if pctVal < 1 {
+				data["yoyLevel"] = "微小"
+			} else {
+				data["yoyLevel"] = "一般"
+			}
+		} else {
+			data["yoyLevel"] = "一般"
+		}
+
+	case fpPopTagProportion:
+		data["tag"] = "年龄"
+		if strings.Contains(conclusion, "性别") {
+			data["tag"] = "性别"
+		} else if strings.Contains(conclusion, "来源") {
+			data["tag"] = "来源地"
+		}
+		data["topLabel"] = extractQuotedName(conclusion)
+		data["topPct"] = extractPct(conclusion)
+
+	case fpPopMultiTagTrend:
+		data["topLabel"] = extractQuotedName(conclusion)
+		data["trendDir"] = "平稳"
+		if strings.Contains(conclusion, "上升") || strings.Contains(conclusion, "增长") {
+			data["trendDir"] = "上升"
+		} else if strings.Contains(conclusion, "下降") || strings.Contains(conclusion, "减少") {
+			data["trendDir"] = "下降"
+		}
+		data["changePct"] = extractPct(conclusion)
+
+	case fpPopComprehensive:
+		data["total"] = firstOr(nums, "0")
+		data["topRegion"] = extractQuotedName(conclusion)
+		data["ageTopLabel"] = extractQuotedName(conclusion)
+		data["ageTopPct"] = extractPct(conclusion)
+		rest := conclusion
+		if idx := strings.Index(conclusion, "占比"); idx > 0 {
+			rest = conclusion[idx+6:]
+		}
+		data["originTopLabel"] = extractQuotedName(rest)
+		data["originTopPct"] = extractPct(rest)
+
+	case fpPopMultiTagCompare:
+		data["ageTopLabel"] = extractQuotedName(conclusion)
+		data["ageTopPct"] = extractPct(conclusion)
+		maleRe := regexp.MustCompile(`男\s*([\d.]+)%`)
+		if m := maleRe.FindStringSubmatch(conclusion); len(m) > 1 {
+			data["malePct"] = m[1]
+		} else {
+			data["malePct"] = "0"
+		}
+		femaleRe := regexp.MustCompile(`女\s*([\d.]+)%`)
+		if m := femaleRe.FindStringSubmatch(conclusion); len(m) > 1 {
+			data["femalePct"] = m[1]
+		} else {
+			data["femalePct"] = "0"
+		}
+		rest := conclusion
+		if idx := strings.Index(conclusion, "省外"); idx > 0 {
+			rest = conclusion[idx:]
+		}
+		data["originTopLabel"] = extractQuotedName(rest)
+		data["originTopPct"] = extractPct(rest)
 
 	case fpGridOverview:
 		data["total_cases"] = firstOr(nums, "0")
@@ -274,10 +479,26 @@ func extractPct(s string) string {
 	return "0"
 }
 
+func extractAllPcts(s string) []string {
+	re := regexp.MustCompile(`([\d.]+)%`)
+	matches := re.FindAllStringSubmatch(s, -1)
+	result := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 {
+			result = append(result, m[1])
+		}
+	}
+	return result
+}
+
 func extractQuotedName(s string) string {
 	re := regexp.MustCompile(`「([^」]+)」`)
-	if m := re.FindStringSubmatch(s); len(m) > 1 {
-		return m[1]
+	matches := re.FindAllStringSubmatch(s, -1)
+	if len(matches) > 1 {
+		return matches[len(matches)-1][1]
+	}
+	if len(matches) > 0 {
+		return matches[0][1]
 	}
 	return "—"
 }

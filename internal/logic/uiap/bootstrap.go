@@ -88,7 +88,7 @@ func PollPermissions(ctx context.Context, client *Client, pageSize int) error {
 		}
 		page++
 	}
-	return writeSyncState(ctx, permissionSyncStateKey, time.Now().Format(time.RFC3339))
+	return writeSyncState(ctx, permissionSyncStateKey, gtime.Now().Format("c"))
 }
 
 func readSyncState(ctx context.Context, key string) string {

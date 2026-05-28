@@ -5,9 +5,11 @@ import (
 	"ai-chat-sql/internal/service"
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 type sPopulation struct{}
@@ -79,6 +81,19 @@ func (s *sPopulation) InitTables(ctx context.Context) error {
 		update_time INT NOT NULL,
 		UNIQUE KEY uk_pop_float_daily (metric_date, region, grid_name)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS population_tag_daily (
+		id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+		day         DATE          NOT NULL,
+		area        VARCHAR(100)  NOT NULL DEFAULT '',
+		tag         VARCHAR(50)   NOT NULL,
+		label       VARCHAR(100)  NOT NULL,
+		type        TINYINT       NOT NULL DEFAULT 1,
+		label_cnt   INT           NOT NULL DEFAULT 0,
+		update_time INT           NOT NULL DEFAULT 0,
+		UNIQUE KEY uk_pop_tag (day, area, tag, label, type),
+		INDEX idx_pop_tag_day (day, tag, type),
+		INDEX idx_pop_tag_area (area, day)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.Exec(ctx, stmt); err != nil {
@@ -105,10 +120,10 @@ func (s *sPopulation) Aggregate(ctx context.Context, query model.PopulationAggre
 	from := query.DateFrom
 	to := query.DateTo
 	if from == "" {
-		from = time.Now().AddDate(0, 0, -7).Format("2006-01-02 00:00:00")
+		from = gtime.Now().AddDate(0, 0, -defaultRefreshDays).Format("Y-m-d H:i:s")
 	}
 	if to == "" {
-		to = time.Now().Format("2006-01-02 23:59:59")
+		to = gtime.Now().Format("Y-m-d") + " 23:59:59"
 	}
 
 	if groupBy == "hour" {
@@ -180,10 +195,10 @@ func (s *sPopulation) YoYCompare(ctx context.Context, dateFrom, dateTo, groupBy 
 	from := dateFrom
 	to := dateTo
 	if from == "" {
-		from = time.Now().AddDate(0, 0, -6).Format("2006-01-02")
+		from = gtime.Now().AddDate(0, 0, -defaultRefreshDays+1).Format("2006-01-02")
 	}
 	if to == "" {
-		to = time.Now().Format("2006-01-02")
+		to = gtime.Now().Format("2006-01-02")
 	}
 
 	currentRecords, err := db.Ctx(ctx).Raw(`
@@ -227,6 +242,165 @@ func (s *sPopulation) YoYCompare(ctx context.Context, dateFrom, dateTo, groupBy 
 		})
 	}
 	return items, nil
+}
+
+func (s *sPopulation) TagDistribution(ctx context.Context, query model.TagDistributionQuery) (*model.TagDistributionResult, error) {
+	db := g.DB("master")
+
+	from := query.DateFrom
+	to := query.DateTo
+
+	conditions := []string{}
+	args := []any{}
+
+	if !query.AllDates {
+		if from == "" {
+			from = gtime.Now().AddDate(0, 0, -defaultRefreshDays).Format("2006-01-02")
+		}
+		if to == "" {
+			to = gtime.Now().Format("2006-01-02")
+		}
+		conditions = append(conditions, "day >= DATE(?) AND day <= DATE(?)")
+		args = append(args, from, to)
+	}
+
+	if query.Tag != "" {
+		conditions = append(conditions, "tag = ?")
+		args = append(args, query.Tag)
+	}
+	if query.Type > 0 {
+		conditions = append(conditions, "type = ?")
+		args = append(args, query.Type)
+	}
+	if query.Area != "" {
+		conditions = append(conditions, "area = ?")
+		args = append(args, query.Area)
+	}
+	if len(query.Labels) > 0 {
+		placeholders := ""
+		labelArgs := make([]any, len(query.Labels))
+		for i, l := range query.Labels {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			labelArgs[i] = l
+		}
+		conditions = append(conditions, "label IN ("+placeholders+")")
+		args = append(args, labelArgs...)
+	}
+
+	where := " WHERE " + conditions[0]
+	for _, c := range conditions[1:] {
+		where += " AND " + c
+	}
+
+	records, err := db.Ctx(ctx).Raw(fmt.Sprintf(`
+		SELECT label, SUM(label_cnt) AS cnt
+		FROM population_tag_daily%s
+		GROUP BY label
+		ORDER BY cnt DESC`, where), args...).All()
+	if err != nil {
+		return nil, err
+	}
+
+	total := 0
+	for _, r := range records {
+		total += r["cnt"].Int()
+	}
+
+	items := make([]model.TagDistributionItem, 0, len(records))
+	for _, r := range records {
+		count := r["cnt"].Int()
+		pct := "0.0"
+		if total > 0 {
+			pct = fmt.Sprintf("%.1f", float64(count)/float64(total)*100)
+		}
+		items = append(items, model.TagDistributionItem{
+			Label: r["label"].String(),
+			Count: count,
+			Pct:   pct,
+		})
+	}
+
+	if query.Tag == "年龄" {
+		items = mergeAgeLabels(items)
+	}
+
+	popType := query.Type
+	if popType == 0 {
+		popType = 1
+	}
+
+	return &model.TagDistributionResult{
+		Tag:   query.Tag,
+		Type:  popType,
+		Total: total,
+		Items: items,
+	}, nil
+}
+
+// ageLabelGroup maps fine-grained DB age labels to broad display groups.
+var ageLabelGroup = map[string]string{
+	"(0,18]":  "0-18",
+	"(19,22]": "18-30",
+	"(23,25]": "18-30",
+	"(26,30]": "18-30",
+	"(31,35]": "30-50",
+	"(36,40]": "30-50",
+	"(41,45]": "30-50",
+	"(46,50]": "30-50",
+	"(51,55]": "50-70",
+	"(56,60]": "50-70",
+	">60":     "70+",
+}
+
+// AgeBroadLabels is the ordered list of broad age group display names.
+var AgeBroadLabels = []string{"0-18", "18-30", "30-50", "50-70", "70+"}
+
+// AgeBroadToDBLabels maps broad group names back to fine-grained DB labels.
+var AgeBroadToDBLabels = map[string][]string{
+	"0-18":  {"(0,18]"},
+	"18-30": {"(19,22]", "(23,25]", "(26,30]"},
+	"30-50": {"(31,35]", "(36,40]", "(41,45]", "(46,50]"},
+	"50-70": {"(51,55]", "(56,60]"},
+	"70+":   {">60"},
+}
+
+func mergeAgeLabels(items []model.TagDistributionItem) []model.TagDistributionItem {
+	merged := make(map[string]int)
+	for _, item := range items {
+		group, ok := ageLabelGroup[item.Label]
+		if !ok {
+			continue // skip "未知" and other unmapped labels
+		}
+		merged[group] += item.Count
+	}
+
+	total := 0
+	for _, cnt := range merged {
+		total += cnt
+	}
+
+	result := make([]model.TagDistributionItem, 0, len(merged))
+	for _, label := range AgeBroadLabels {
+		if cnt, ok := merged[label]; ok {
+			pct := "0.0"
+			if total > 0 {
+				pct = fmt.Sprintf("%.1f", float64(cnt)/float64(total)*100)
+			}
+			result = append(result, model.TagDistributionItem{
+				Label: label,
+				Count: cnt,
+				Pct:   pct,
+			})
+		}
+	}
+	// Sort by count DESC so Items[0] is the dominant group
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Count > result[j].Count
+	})
+	return result
 }
 
 func normalizePopGroupBy(groupBy string) string {

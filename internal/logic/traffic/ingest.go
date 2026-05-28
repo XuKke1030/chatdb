@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 type gatePayload struct {
@@ -127,7 +129,7 @@ func (s *sTraffic) HandleRawPayload(ctx context.Context, topic string, raw []byt
 		Enabled:          true,
 		Connected:        true,
 		Topic:            topic,
-		LatestReceivedAt: time.Now(),
+		LatestReceivedAt: gtime.Now().Time,
 		LatestError:      "",
 		IncrementToday:   inserted,
 	})

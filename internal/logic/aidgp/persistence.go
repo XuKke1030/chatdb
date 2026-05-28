@@ -194,7 +194,7 @@ func persistPopulation(ctx context.Context, externalId string, item map[string]a
 	now := int(gtime.Timestamp())
 	metricTime := parseTimeField(item, "metricTime", "snapshotTime", "time", "date")
 	if metricTime.IsZero() {
-		metricTime = time.Now()
+		metricTime = gtime.Now().Time
 	}
 	data := g.Map{
 		"sync_version":              syncVersion(item),

@@ -60,10 +60,9 @@ func (s *sMcpTool) ExecSql(ctx context.Context, request mcp.CallToolRequest) (ou
 	}
 
 	if queryErr != nil {
-		outStr := fmt.Sprintf("数据库执行失败：%s", queryErr.Error())
-		consts.Logger.Error(ctx, outStr)
+		consts.Logger.Errorf(ctx, "数据库执行失败: %v", queryErr)
 		consts.Logger.Infof(ctx, "sql_audit sql=%s durationMs=%d rowCount=0 error=%v", sql, queryMs, queryErr)
-		out = mcp.NewToolResultText(outStr)
+		out = mcp.NewToolResultText(utility.SafeUserErr(queryErr))
 		err = nil
 		return
 	}
@@ -116,18 +115,21 @@ func (s *sMcpTool) GetDatabaseInfo(ctx context.Context, request mcp.CallToolRequ
 		db, err = getConfiguredGroupDB(dbname)
 	}
 	if err != nil {
-		out = mcp.NewToolResultText(fmt.Sprintf("数据库配置错误：%s", err.Error()))
+		consts.Logger.Errorf(ctx, "GetDatabaseInfo 配置错误: %v", err)
+		out = mcp.NewToolResultText(utility.SafeUserErr(err))
 		err = nil
 		return
 	}
 	if db == nil {
-		err = errors.New("数据库连接不存在，请检查数据库配置")
+		out = mcp.NewToolResultText("数据库连接不存在，请检查数据库配置")
+		err = nil
 		return
 	}
 
 	dbConfig := db.GetConfig()
 	if dbConfig == nil {
-		err = errors.New("无法获取数据库配置")
+		out = mcp.NewToolResultText("无法获取数据库配置")
+		err = nil
 		return
 	}
 
@@ -155,9 +157,9 @@ func (s *sMcpTool) GetDatabaseInfo(ctx context.Context, request mcp.CallToolRequ
 	}
 
 	// 获取数据库大小（如果支持）
-	sizeQuery := getSizeQuery(dbConfig.Type, databaseName)
-	if sizeQuery != "" {
-		sqlOut, queryErr := db.Query(ctx, sizeQuery)
+	sizeSQL, sizeArgs := getSizeQuery(dbConfig.Type, databaseName)
+	if sizeSQL != "" {
+		sqlOut, queryErr := db.Query(ctx, sizeSQL, sizeArgs...)
 		if queryErr == nil && sqlOut != nil && len(sqlOut.List()) > 0 {
 			sizeInfo := sqlOut.List()[0]
 			dbInfo["databaseSize"] = sizeInfo
@@ -289,15 +291,15 @@ func getVersionQuery(dbType string) string {
 	}
 }
 
-// 根据数据库类型获取大小查询语句
-func getSizeQuery(dbType, dbname string) string {
+// getSizeQuery 返回数据库大小查询的 SQL 和参数，使用参数化查询防止注入
+func getSizeQuery(dbType, dbname string) (sql string, args []interface{}) {
 	switch dbType {
 	case "mysql":
-		return fmt.Sprintf("SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)' FROM information_schema.tables WHERE table_schema = '%s'", dbname)
+		return "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS `Size (MB)` FROM information_schema.tables WHERE table_schema = ?", []interface{}{dbname}
 	case "postgresql", "postgres":
-		return fmt.Sprintf("SELECT pg_size_pretty(pg_database_size('%s')) as size", dbname)
+		return "SELECT pg_size_pretty(pg_database_size($1)) as size", []interface{}{dbname}
 	default:
-		return ""
+		return "", nil
 	}
 }
 

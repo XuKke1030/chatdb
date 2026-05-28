@@ -63,6 +63,7 @@ type ChatReq struct {
 	Topic         string                  `json:"topic" dc:"主题(grid/population/traffic)，不传则不限知识库范围"`
 	SessionId     string                  `json:"sessionId" dc:"会话ID，不传则自动创建"`
 	History       []model.ChatHistoryItem `json:"history" dc:"前端附带的临时上下文，服务端会合并已存储历史"`
+	Context       []model.ChatHistoryItem `json:"context" dc:"history的别名，兼容前端字段名"`
 	TopK          int                     `json:"topK" dc:"召回条数，默认5，最大20"`
 	Ai            string                  `json:"ai" dc:"AI供应商，默认deepseek"`
 	Model         string                  `json:"model" dc:"模型名称，默认deepseek-chat"`
@@ -101,11 +102,13 @@ type DocumentSegmentItem struct {
 	Content      string `json:"content"`
 	Page         int    `json:"page"`
 	Anchor       string `json:"anchor"`
+	IsFocused    bool   `json:"isFocused,omitempty"`
 }
 
 type DocumentViewReq struct {
-	g.Meta     `path:"/qa/documents/{id}/view" method:"get" tags:"V1/问答" sm:"文档查看" dc:"查看问答端文档内容，返回段落锚点供前端定位"`
-	DocumentId int64 `json:"id" in:"path" v:"required#文档ID不能为空"`
+	g.Meta        `path:"/qa/documents/{id}/view" method:"get" tags:"V1/问答" sm:"文档查看" dc:"查看问答端文档内容，返回段落锚点供前端定位"`
+	DocumentId    int64 `json:"id" in:"path" v:"required#文档ID不能为空"`
+	FocusSegmentId int64 `json:"focusSegmentId" p:"focusSegmentId" dc:"需要定位高亮的段落ID"`
 }
 
 type DocumentViewRes struct {

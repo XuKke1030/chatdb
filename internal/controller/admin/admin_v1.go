@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,14 +31,14 @@ import (
 
 func (c *ControllerV1) AdminLogin(ctx context.Context, req *v1.AdminLoginReq) (res *v1.AdminLoginRes, err error) {
 	if req.Username == "" || req.Password == "" {
-		return nil, gerror.New("绠＄悊鍛樿处鍙峰拰瀵嗙爜涓嶈兘涓虹┖")
+		return nil, gerror.New("管理员账号和密码不能为空")
 	}
 	record, err := g.DB("master").Model("admin_account").Ctx(ctx).Where("username = ? AND enabled = ?", req.Username, 1).One()
 	if err != nil {
 		return nil, err
 	}
 	if record == nil {
-		return nil, gerror.New("绠＄悊鍛樿处鍙锋垨瀵嗙爜閿欒")
+		return nil, gerror.New("管理员账号或密码错误")
 	}
 	verify := record["verify"].Int()
 	password, err := genAdminPassword(req.Password, verify)
@@ -45,7 +46,7 @@ func (c *ControllerV1) AdminLogin(ctx context.Context, req *v1.AdminLoginReq) (r
 		return nil, err
 	}
 	if record["password"].String() != password {
-		return nil, gerror.New("绠＄悊鍛樿处鍙锋垨瀵嗙爜閿欒")
+		return nil, gerror.New("管理员账号或密码错误")
 	}
 	_ = insertAdminLog(ctx, "admin", req.Username, "管理员登录", "管理员登录后台管理平台", "success")
 	jwtOut, jwtErr := service.Jwt().GenToken(ctx, &model.JWTGenTokenInput{
@@ -55,9 +56,21 @@ func (c *ControllerV1) AdminLogin(ctx context.Context, req *v1.AdminLoginReq) (r
 	if jwtErr != nil {
 		return nil, jwtErr
 	}
+	// Also generate a user JWT so the admin can access user-scoped endpoints (e.g. QA sync)
+	var userToken string
+	userRecord, _ := g.DB("master").Model("user").Ctx(ctx).Fields("user_id").Where("username = ?", req.Username).One()
+	if userRecord != nil && userRecord["user_id"].Int() > 0 {
+		if userOut, userErr := service.Jwt().GenToken(ctx, &model.JWTGenTokenInput{
+			Subject: consts.JwtSubjectUser,
+			Id:      int64(userRecord["user_id"].Int()),
+		}); userErr == nil && userOut != nil {
+			userToken = userOut.Token
+		}
+	}
 	return &v1.AdminLoginRes{
-		Token:    jwtOut.Token,
-		Username: req.Username,
+		Token:     jwtOut.Token,
+		Username:  req.Username,
+		UserToken: userToken,
 	}, nil
 }
 
@@ -91,17 +104,19 @@ func (c *ControllerV1) AdminKnowledgeBases(ctx context.Context, req *v1.AdminKno
 
 func (c *ControllerV1) AdminUpdateUserPermissions(ctx context.Context, req *v1.AdminUpdateUserPermissionsReq) (res *v1.AdminUpdateUserPermissionsRes, err error) {
 	if req.Id <= 0 {
-		return nil, gerror.New("鐢ㄦ埛ID涓嶈兘涓虹┖")
+		return nil, gerror.New("用户ID不能为空")
 	}
 	ruleLevel := req.RuleLevel
 	if ruleLevel == 0 && len(req.Permissions) > 0 {
 		ruleLevel = ruleLevelFromPermissions(req.Permissions)
 	}
 	now := int(gtime.Timestamp())
-	_, _ = g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", req.Id).Data(g.Map{
+	if _, err := g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", req.Id).Data(g.Map{
 		"rule_level":  ruleLevel,
 		"update_time": now,
-	}).Update()
+	}).Update(); err != nil {
+		return nil, gerror.Wrap(err, "更新用户权限等级失败")
+	}
 	if err = upsertUserProfile(ctx, req.Id, g.Map{"rule_level": ruleLevel, "update_time": now}); err != nil {
 		return nil, err
 	}
@@ -122,7 +137,7 @@ func (c *ControllerV1) AdminUpdateUserPermissions(ctx context.Context, req *v1.A
 
 func (c *ControllerV1) AdminUpdateUserStatus(ctx context.Context, req *v1.AdminUpdateUserStatusReq) (res *v1.AdminUpdateUserStatusRes, err error) {
 	if req.Id <= 0 {
-		return nil, gerror.New("鐢ㄦ埛ID涓嶈兘涓虹┖")
+		return nil, gerror.New("用户ID不能为空")
 	}
 	if err = upsertUserProfile(ctx, req.Id, g.Map{"enabled": boolToInt(req.Enabled), "update_time": int(gtime.Timestamp())}); err != nil {
 		return nil, err
@@ -178,7 +193,7 @@ func (c *ControllerV1) AdminCreateExampleQuestion(ctx context.Context, req *v1.A
 
 func (c *ControllerV1) AdminUpdateExampleQuestion(ctx context.Context, req *v1.AdminUpdateExampleQuestionReq) (res *v1.AdminUpdateExampleQuestionRes, err error) {
 	if req.Id <= 0 {
-		return nil, gerror.New("闂ID涓嶈兘涓虹┖")
+		return nil, gerror.New("问题ID不能为空")
 	}
 	_, err = g.DB("master").Model("admin_example_question").Ctx(ctx).Where("id = ?", req.Id).Data(g.Map{
 		"topic":       req.Topic,
@@ -201,7 +216,7 @@ func (c *ControllerV1) AdminUpdateExampleQuestion(ctx context.Context, req *v1.A
 
 func (c *ControllerV1) AdminDeleteExampleQuestion(ctx context.Context, req *v1.AdminDeleteExampleQuestionReq) (res *v1.AdminDeleteExampleQuestionRes, err error) {
 	if req.Id <= 0 {
-		return nil, gerror.New("闂ID涓嶈兘涓虹┖")
+		return nil, gerror.New("问题ID不能为空")
 	}
 	_, err = g.DB("master").Model("admin_example_question").Ctx(ctx).Where("id = ?", req.Id).Delete()
 	_ = insertAdminLog(ctx, "admin", "admin", "示例问题", fmt.Sprintf("删除示例问题ID %d", req.Id), "success")
@@ -228,10 +243,13 @@ func (c *ControllerV1) AdminApproveQuestionCandidate(ctx context.Context, req *v
 	// Auto-create example question from approved candidate
 	if item.Question != "" {
 		now := int(gtime.Timestamp())
-		existing, _ := g.DB("master").Model("admin_example_question").Ctx(ctx).
+		existing, countErr := g.DB("master").Model("admin_example_question").Ctx(ctx).
 			Where("topic = ? AND question = ?", item.Topic, item.Question).Count()
+		if countErr != nil {
+			consts.Logger.Warningf(ctx, "查询示例问题失败: %s", countErr.Error())
+		}
 		if existing == 0 {
-			_, _ = g.DB("master").Model("admin_example_question").Ctx(ctx).Data(g.Map{
+			if _, insertErr := g.DB("master").Model("admin_example_question").Ctx(ctx).Data(g.Map{
 				"topic":       item.Topic,
 				"question":    item.Question,
 				"description": fmt.Sprintf("从用户提问自动沉淀（累计%d次）", item.Count),
@@ -239,7 +257,9 @@ func (c *ControllerV1) AdminApproveQuestionCandidate(ctx context.Context, req *v
 				"sort":        0,
 				"create_time": now,
 				"update_time": now,
-			}).Insert()
+			}).Insert(); insertErr != nil {
+				consts.Logger.Warningf(ctx, "自动沉淀示例问题失败: %s", insertErr.Error())
+			}
 		}
 	}
 	return &v1.AdminApproveQuestionCandidateRes{Item: item}, nil
@@ -247,7 +267,7 @@ func (c *ControllerV1) AdminApproveQuestionCandidate(ctx context.Context, req *v
 
 func (c *ControllerV1) AdminRejectQuestionCandidate(ctx context.Context, req *v1.AdminRejectQuestionCandidateReq) (res *v1.AdminRejectQuestionCandidateRes, err error) {
 	if req.Id <= 0 {
-		return nil, gerror.New("鍊欓€夐棶棰業D涓嶈兘涓虹┖")
+		return nil, gerror.New("候选问题ID不能为空")
 	}
 	item, err := updateQuestionCandidateStatus(ctx, req.Id, "rejected")
 	if err != nil {
@@ -408,10 +428,10 @@ func (c *ControllerV1) AdminGridImportUpload(ctx context.Context, req *v1.AdminG
 	}
 	// Audit: upload action
 	if _, err = tx.Model("admin_grid_import_audit").Ctx(ctx).Data(g.Map{
-		"import_id":  id,
-		"action":     "upload",
-		"operator":   defaultString(req.Operator, "admin"),
-		"detail":     fmt.Sprintf("上传文件 %s，成功%d条，失败%d条", fileName, successRows, failedRows),
+		"import_id":   id,
+		"action":      "upload",
+		"operator":    defaultString(req.Operator, "admin"),
+		"detail":      fmt.Sprintf("上传文件 %s，成功%d条，失败%d条", fileName, successRows, failedRows),
 		"create_time": now,
 	}).Insert(); err != nil {
 		return nil, err
@@ -482,7 +502,7 @@ func (c *ControllerV1) AdminRefreshPopulationAggregates(ctx context.Context, req
 }
 
 func (c *ControllerV1) AdminSyncHoliday(ctx context.Context, req *v1.AdminSyncHolidayReq) (res *v1.AdminSyncHolidayRes, err error) {
-	year := time.Now().Year()
+	year := gtime.Now().Year()
 	_ = service.Traffic().FetchHolidaysFromAPI(ctx, year)
 	_ = service.Traffic().FetchHolidaysFromAPI(ctx, year+1)
 	if err := service.Traffic().SyncHolidaysFromCode(ctx); err != nil {
@@ -654,7 +674,7 @@ func (c *ControllerV1) AdminLogs(ctx context.Context, req *v1.AdminLogsReq) (res
 
 func (c *ControllerV1) updateCandidateStatus(ctx context.Context, id int, status string) (*v1.AdminApproveQuestionCandidateRes, error) {
 	if id <= 0 {
-		return nil, gerror.New("鍊欓€夐棶棰業D涓嶈兘涓虹┖")
+		return nil, gerror.New("候选问题ID不能为空")
 	}
 	item, err := updateQuestionCandidateStatus(ctx, id, status)
 	if err != nil {
@@ -861,9 +881,9 @@ func SeedAdminTables(ctx context.Context, db gdb.DB) error {
 	}
 	if count, err := db.Model("admin_example_question").Ctx(ctx).Count(); err == nil && count == 0 {
 		seeds := []g.Map{
-			{"topic": "grid", "question": "鏈湀楂樻柊鍖烘浠剁粨妗堢巼鏄灏戯紵", "description": "鏌ヨ缃戞牸妗堜欢鍔炵悊鎴愭晥", "enabled": 1, "sort": 10, "create_time": now, "update_time": now},
-			{"topic": "population", "question": "杩囧幓涓€鍛ㄤ汉娴佽繘鍑鸿秼鍔垮浣曪紵", "description": "灞曠ず姣忔棩杩涘嚭浜烘暟瀵规瘮", "enabled": 1, "sort": 20, "create_time": now, "update_time": now},
-			{"topic": "traffic", "question": "浠婃棩娓境杞﹁締鍗犳瘮鏄灏戯紵", "description": "缁熻閲嶇偣鍗″彛璺ㄥ杞﹁締鎯呭喌", "enabled": 1, "sort": 30, "create_time": now, "update_time": now},
+			{"topic": "grid", "question": "本月高新区案件结案率是多少？", "description": "查询网格案件办理成效", "enabled": 1, "sort": 10, "create_time": now, "update_time": now},
+			{"topic": "population", "question": "过去一周人流进出趋势如何？", "description": "展示每日进出人数对比", "enabled": 1, "sort": 20, "create_time": now, "update_time": now},
+			{"topic": "traffic", "question": "今日港澳车辆占比是多少？", "description": "统计重点卡口跨境车辆情况", "enabled": 1, "sort": 30, "create_time": now, "update_time": now},
 		}
 		for _, seed := range seeds {
 			if _, err := db.Model("admin_example_question").Ctx(ctx).Data(seed).Insert(); err != nil {
@@ -873,9 +893,9 @@ func SeedAdminTables(ctx context.Context, db gdb.DB) error {
 	}
 	if count, err := db.Model("admin_data_source").Ctx(ctx).Count(); err == nil && count == 0 {
 		seeds := []g.Map{
-			{"source_type": "population", "name": "浜烘祦鏁版嵁鎺ュ叆", "enabled": 0, "status": "closed", "latest_sync": 0, "create_time": now, "update_time": now},
-			{"source_type": "traffic", "name": "杞︽祦鏁版嵁鎺ュ叆", "enabled": 0, "status": "closed", "latest_sync": 0, "create_time": now, "update_time": now},
-			{"source_type": "grid", "name": "缃戞牸鏈堝害瀵煎叆", "enabled": 1, "status": "ready", "latest_sync": 0, "create_time": now, "update_time": now},
+			{"source_type": "population", "name": "人流数据接入", "enabled": 0, "status": "closed", "latest_sync": 0, "create_time": now, "update_time": now},
+			{"source_type": "traffic", "name": "车流数据接入", "enabled": 0, "status": "closed", "latest_sync": 0, "create_time": now, "update_time": now},
+			{"source_type": "grid", "name": "网格月度导入", "enabled": 1, "status": "ready", "latest_sync": 0, "create_time": now, "update_time": now},
 		}
 		for _, seed := range seeds {
 			if _, err := db.Model("admin_data_source").Ctx(ctx).Data(seed).Insert(); err != nil {
@@ -1138,7 +1158,7 @@ func getDataSource(ctx context.Context, sourceType string) (v1.DataSourceItem, e
 		return v1.DataSourceItem{}, err
 	}
 	if record == nil {
-		return v1.DataSourceItem{}, gerror.New("鏁版嵁婧愪笉瀛樺湪")
+		return v1.DataSourceItem{}, gerror.New("数据源不存在")
 	}
 	return dataSourceFromRecord(record), nil
 }
@@ -1167,7 +1187,7 @@ func updateQuestionCandidateStatus(ctx context.Context, id int, status string) (
 		return v1.QuestionCandidateItem{}, err
 	}
 	if record == nil {
-		return v1.QuestionCandidateItem{}, gerror.New("鍊欓€夐棶棰樹笉瀛樺湪")
+		return v1.QuestionCandidateItem{}, gerror.New("候选问题不存在")
 	}
 	return questionCandidateFromRecord(record), nil
 }
@@ -1364,13 +1384,15 @@ func executeAdminAidgpSync(ctx context.Context, syncType string, knowledgeCode s
 		if status == "failed" || status == "partial_failed" {
 			dsStatus = "error"
 		}
-		_, _ = g.DB("master").Model("admin_data_source").Ctx(ctx).
+		if _, dsErr := g.DB("master").Model("admin_data_source").Ctx(ctx).
 			Where("source_type = ?", sourceType).
 			Data(g.Map{
-				"latest_sync":  finishedAt,
-				"status":       dsStatus,
-				"update_time":  finishedAt,
-			}).Update()
+				"latest_sync": finishedAt,
+				"status":      dsStatus,
+				"update_time": finishedAt,
+			}).Update(); dsErr != nil {
+			consts.Logger.Warningf(ctx, "更新数据源状态失败: %s", dsErr.Error())
+		}
 	}
 	return &v1.AdminSyncRes{
 		TaskId:       taskId,
@@ -1453,13 +1475,15 @@ func executeAdminAidgpSyncWithScope(ctx context.Context, syncType string, knowle
 		if status == "failed" || status == "partial_failed" {
 			dsStatus = "error"
 		}
-		_, _ = g.DB("master").Model("admin_data_source").Ctx(ctx).
+		if _, dsErr := g.DB("master").Model("admin_data_source").Ctx(ctx).
 			Where("source_type = ?", sourceType).
 			Data(g.Map{
-				"latest_sync":  finishedAt,
-				"status":       dsStatus,
-				"update_time":  finishedAt,
-			}).Update()
+				"latest_sync": finishedAt,
+				"status":      dsStatus,
+				"update_time": finishedAt,
+			}).Update(); dsErr != nil {
+			consts.Logger.Warningf(ctx, "更新数据源状态失败: %s", dsErr.Error())
+		}
 	}
 	return &v1.AdminSyncRes{
 		TaskId:       taskId,
@@ -2070,6 +2094,9 @@ func (c *ControllerV1) AdminCaseDelete(ctx context.Context, req *v1.AdminCaseDel
 
 // AdminCaseDeleteAll 删除所有案件
 func (c *ControllerV1) AdminCaseDeleteAll(ctx context.Context, req *v1.AdminCaseDeleteAllReq) (res *v1.AdminCaseDeleteAllRes, err error) {
+	if !req.Confirm {
+		return nil, gerror.New("必须传递 confirm=true 才能执行批量删除")
+	}
 
 	result, err := g.DB("master").Model("case_list").Ctx(ctx).Delete()
 	if err != nil {
@@ -2210,7 +2237,7 @@ func (c *ControllerV1) AdminBindTopicKnowledge(ctx context.Context, req *v1.Admi
 	} else {
 		_, err = g.DB("master").Model("topic_knowledge_binding").Ctx(ctx).Data(g.Map{
 			"topic":          req.Topic,
-			"knowledge_code":  req.KnowledgeCode,
+			"knowledge_code": req.KnowledgeCode,
 			"enabled":        1,
 			"create_time":    now,
 			"update_time":    now,
@@ -2343,8 +2370,10 @@ func disableOrphanedKnowledgeBases(ctx context.Context, result aidgp.SyncResult)
 	for _, r := range records {
 		code := r["code"].String()
 		if !syncedCodes[code] {
-			_, _ = g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
-				Where("code = ?", code).Data(g.Map{"enabled": 0, "update_time": now}).Update()
+			if _, kbErr := g.DB("master").Model("qa_knowledge_base").Ctx(ctx).
+				Where("code = ?", code).Data(g.Map{"enabled": 0, "update_time": now}).Update(); kbErr != nil {
+				consts.Logger.Warningf(ctx, "禁用知识库失败 code=%s: %s", code, kbErr.Error())
+			}
 		}
 	}
 }
@@ -2385,8 +2414,8 @@ func (c *ControllerV1) AdminCreateDocumentRelation(ctx context.Context, req *v1.
 	now := int(gtime.Timestamp())
 	result, err := g.DB("master").Model("qa_document_relation").Ctx(ctx).Data(g.Map{
 		"from_doc_id": req.FromDocId,
-		"to_doc_id":  req.ToDocId,
-		"rel_type":   req.RelType,
+		"to_doc_id":   req.ToDocId,
+		"rel_type":    req.RelType,
 		"description": req.Description,
 		"enabled":     1,
 		"create_time": now,
@@ -2434,4 +2463,254 @@ func (c *ControllerV1) AdminDocumentRecommendations(ctx context.Context, req *v1
 		})
 	}
 	return &v1.AdminDocumentRecommendationsRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminAutoDiscoverRelations(ctx context.Context, req *v1.AdminAutoDiscoverRelationsReq) (res *v1.AdminAutoDiscoverRelationsRes, err error) {
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+
+	model := g.DB("master").Model("qa_document d").Ctx(ctx).
+		Fields("d.id, d.knowledge_code, d.title, d.doc_type, d.effective_date, d.repeal_date, d.repealed_by, d.title_group, d.status, kb.doc_type AS kb_doc_type").
+		LeftJoin("qa_knowledge_base kb", "kb.code = d.knowledge_code").
+		Where("d.status = ?", "active")
+	if req.KnowledgeCode != "" {
+		model = model.Where("d.knowledge_code = ?", req.KnowledgeCode)
+	}
+
+	records, err := model.OrderAsc("d.id").All()
+	if err != nil {
+		return nil, err
+	}
+
+	existingRels, err := g.DB("master").Model("qa_document_relation").Ctx(ctx).
+		Fields("from_doc_id, to_doc_id, rel_type").All()
+	if err != nil {
+		return nil, err
+	}
+	existSet := make(map[string]bool, len(existingRels))
+	for _, r := range existingRels {
+		key := fmt.Sprintf("%d-%d-%s", r["from_doc_id"].Int64(), r["to_doc_id"].Int64(), r["rel_type"].String())
+		existSet[key] = true
+	}
+
+	candidates := make([]v1.AutoDiscoverItem, 0)
+
+	titleGroups := make(map[string][]gdb.Record)
+	for _, r := range records {
+		tg := r["title_group"].String()
+		if tg != "" {
+			titleGroups[tg] = append(titleGroups[tg], r)
+		}
+	}
+
+	for _, group := range titleGroups {
+		if len(group) < 2 {
+			continue
+		}
+		sorted := make([]gdb.Record, len(group))
+		copy(sorted, group)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i]["effective_date"].String() > sorted[j]["effective_date"].String()
+		})
+		for i := 0; i < len(sorted)-1; i++ {
+			from := sorted[i]
+			to := sorted[i+1]
+			key := fmt.Sprintf("%d-%d-supplement", from["id"].Int64(), to["id"].Int64())
+			if !existSet[key] {
+				candidates = append(candidates, v1.AutoDiscoverItem{
+					FromDocId:    from["id"].Int64(),
+					FromDocTitle: from["title"].String(),
+					ToDocId:      to["id"].Int64(),
+					ToDocTitle:   to["title"].String(),
+					RelType:      "supplement",
+					Reason:       fmt.Sprintf("同名文件不同版本（%s → %s）", from["effective_date"].String(), to["effective_date"].String()),
+				})
+				existSet[key] = true
+			}
+		}
+	}
+
+	for _, r := range records {
+		revokedBy := r["repealed_by"].String()
+		if revokedBy == "" {
+			continue
+		}
+		var targetId int64
+		var targetTitle string
+		if _, pErr := fmt.Sscanf(revokedBy, "%d", &targetId); pErr == nil && targetId > 0 {
+			targetTitle = revokedBy
+		} else {
+			for _, t := range records {
+				if t["title"].String() == revokedBy {
+					targetId = t["id"].Int64()
+					targetTitle = revokedBy
+					break
+				}
+			}
+		}
+		if targetId <= 0 {
+			continue
+		}
+		fromId := targetId
+		toId := r["id"].Int64()
+		key := fmt.Sprintf("%d-%d-repeal", fromId, toId)
+		if !existSet[key] {
+			candidates = append(candidates, v1.AutoDiscoverItem{
+				FromDocId:    fromId,
+				FromDocTitle: targetTitle,
+				ToDocId:      toId,
+				ToDocTitle:   r["title"].String(),
+				RelType:      "repeal",
+				Reason:       fmt.Sprintf("废止关系：'%s' 废止了 '%s'", targetTitle, r["title"].String()),
+			})
+			existSet[key] = true
+		}
+	}
+
+	type docTopicKey struct {
+		knowledgeCode string
+		docType       string
+	}
+	topicDocs := make(map[docTopicKey][]gdb.Record)
+	for _, r := range records {
+		key := docTopicKey{
+			knowledgeCode: r["knowledge_code"].String(),
+			docType:       r["doc_type"].String(),
+		}
+		topicDocs[key] = append(topicDocs[key], r)
+	}
+	for key, docs := range topicDocs {
+		if len(docs) < 2 {
+			continue
+		}
+		for i := 0; i < len(docs) && i < 20; i++ {
+			for j := i + 1; j < len(docs) && j < 20; j++ {
+				a, b := docs[i], docs[j]
+				relKey := fmt.Sprintf("%d-%d-related", a["id"].Int64(), b["id"].Int64())
+				relKeyRev := fmt.Sprintf("%d-%d-related", b["id"].Int64(), a["id"].Int64())
+				if existSet[relKey] || existSet[relKeyRev] {
+					continue
+				}
+				candidates = append(candidates, v1.AutoDiscoverItem{
+					FromDocId:    a["id"].Int64(),
+					FromDocTitle: a["title"].String(),
+					ToDocId:      b["id"].Int64(),
+					ToDocTitle:   b["title"].String(),
+					RelType:      "related",
+					Reason:       fmt.Sprintf("同知识库同类型（%s/%s）", key.knowledgeCode, key.docType),
+				})
+				existSet[relKey] = true
+			}
+		}
+	}
+
+	var created int
+	if !dryRun {
+		now := int(gtime.Timestamp())
+		for _, c := range candidates {
+			_, insertErr := g.DB("master").Model("qa_document_relation").Ctx(ctx).Data(g.Map{
+				"from_doc_id": c.FromDocId,
+				"to_doc_id":   c.ToDocId,
+				"rel_type":    c.RelType,
+				"description": c.Reason,
+				"enabled":     1,
+				"create_time": now,
+				"update_time": now,
+			}).Insert()
+			if insertErr == nil {
+				created++
+			}
+		}
+	}
+
+	return &v1.AdminAutoDiscoverRelationsRes{Discovered: candidates, Created: created}, nil
+}
+
+func (c *ControllerV1) AdminComplianceCheck(ctx context.Context, req *v1.AdminComplianceCheckReq) (res *v1.AdminComplianceCheckRes, err error) {
+	model := g.DB("master").Model("qa_document d").Ctx(ctx).
+		Fields("d.id, d.title, d.knowledge_code, d.status, d.effective_date, d.repeal_date, d.repealed_by, d.title_group, d.doc_type").
+		Where("d.status <> ?", "deleted")
+	if req.KnowledgeCode != "" {
+		model = model.Where("d.knowledge_code = ?", req.KnowledgeCode)
+	}
+	records, err := model.All()
+	if err != nil {
+		return nil, err
+	}
+
+	issues := make([]v1.ComplianceIssue, 0)
+
+	now := gtime.Now()
+	nowStr := now.Format("Y-m-d")
+
+	for _, r := range records {
+		if r["effective_date"].String() == "" && r["doc_type"].String() == "policy" {
+			issues = append(issues, v1.ComplianceIssue{
+				DocumentId:    r["id"].Int64(),
+				DocumentTitle: r["title"].String(),
+				IssueType:     "missing_effective_date",
+				Description:   "政策制度类文档缺少生效日期",
+				Severity:      "medium",
+			})
+		}
+
+		repealDate := r["repeal_date"].String()
+		if repealDate != "" && repealDate < nowStr && r["status"].String() == "active" {
+			issues = append(issues, v1.ComplianceIssue{
+				DocumentId:    r["id"].Int64(),
+				DocumentTitle: r["title"].String(),
+				IssueType:     "overdue_active",
+				Description:   fmt.Sprintf("文档已过废止日期(%s)但仍为活跃状态", repealDate),
+				Severity:      "high",
+			})
+		}
+
+		revokedBy := r["repealed_by"].String()
+		if revokedBy != "" {
+			var refExists bool
+			for _, t := range records {
+				if fmt.Sprintf("%d", t["id"].Int64()) == revokedBy || t["title"].String() == revokedBy {
+					refExists = true
+					break
+				}
+			}
+			if !refExists {
+				issues = append(issues, v1.ComplianceIssue{
+					DocumentId:    r["id"].Int64(),
+					DocumentTitle: r["title"].String(),
+					IssueType:     "broken_repeal_ref",
+					Description:   fmt.Sprintf("废止引用'%s'在知识库中找不到对应文档", revokedBy),
+					Severity:      "high",
+				})
+			}
+		}
+
+		tg := r["title_group"].String()
+		if tg != "" && r["effective_date"].String() == "" {
+			issues = append(issues, v1.ComplianceIssue{
+				DocumentId:    r["id"].Int64(),
+				DocumentTitle: r["title"].String(),
+				IssueType:     "version_no_date",
+				Description:   fmt.Sprintf("多版本文档'%s'缺少生效日期，无法确定版本顺序", tg),
+				Severity:      "medium",
+			})
+		}
+	}
+
+	relCount, err := g.DB("master").Model("qa_document_relation r").Ctx(ctx).
+		LeftJoin("qa_document d", "d.id = r.from_doc_id").
+		Where("d.status = ?", "active").Count()
+	if err == nil && relCount == 0 && len(records) > 5 {
+		issues = append(issues, v1.ComplianceIssue{
+			DocumentId:    0,
+			DocumentTitle: "",
+			IssueType:     "no_relations",
+			Description:   "知识库中已有多个文档但无任何关联关系，建议运行自动发现",
+			Severity:      "low",
+		})
+	}
+
+	return &v1.AdminComplianceCheckRes{Issues: issues}, nil
 }

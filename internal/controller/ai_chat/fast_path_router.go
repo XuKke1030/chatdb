@@ -18,6 +18,7 @@ type FastPathIntent struct {
 	Question   string         `json:"question"`
 	DatabaseId int            `json:"databaseId"`
 	Cacheable  bool           `json:"cacheable"`
+	Hybrid     bool           `json:"hybrid"`
 	Params     map[string]any `json:"params,omitempty"`
 	legacy     *fastPath
 }
@@ -65,18 +66,39 @@ func (r *FastPathRouter) Match(req *v1.ChatReq) (*FastPathIntent, bool) {
 	if fp == nil {
 		return nil, false
 	}
-	// 参数提取：context 后续从 controller 层注入，这里用 background 仅做卡口名称匹配
-	params := ExtractFastPathParams(context.Background(), req.Topic, req.Message)
+	// 参数提取：缺省时间优先继承会话上一轮明确时间，避免追问时回退到默认周期。
+	params := ExtractFastPathParamsWithHistory(context.Background(), req.Topic, req.Message, req.History)
 	fp.params = params
+	hybrid := isHybridFastPath(fp.kind)
 	return &FastPathIntent{
 		Intent:     fastPathIntentName(fp.kind),
 		Topic:      req.Topic,
 		Question:   req.Message,
 		DatabaseId: req.DatabaseId,
-		Cacheable:  true,
+		Cacheable:  !hybrid,
+		Hybrid:     hybrid,
 		Params:     paramsToMap(params),
 		legacy:     fp,
 	}, true
+}
+
+// isHybridFastPath returns true for fast path kinds that should use LLM to
+// generate the natural language answer instead of a fixed template.
+func isHybridFastPath(kind fastPathKind) bool {
+	switch kind {
+	case fpTrafficGateRank, fpTrafficTopGateToday,
+		fpTrafficHkMacau, fpTrafficProvinceInside,
+		fpTrafficWeek, fpTrafficHoliday, fpTrafficHolidayCompare, fpTrafficWeekendCompare,
+		fpTrafficMultiGateCompare, fpTrafficHkMacauYoY, fpTrafficHkMacauStay,
+		fpPopWeekTrend, fpPopRegionRank, fpPopHourlyTrend,
+		fpPopTagDistribution, fpPopTagTopN, fpPopTagTrend,
+		fpPopTagProportion, fpPopMultiTagTrend, fpPopComprehensive, fpPopMultiTagCompare,
+		fpPopActivationSummary, fpPopActivationTrend,
+		fpPopPortrait, fpPopOverview, fpTrafficOverview,
+		fpGridCaseCount, fpGridCloseRate, fpGridRegionRank, fpGridCaseTypeDist, fpGridOverview, fpGridAvgHandle:
+		return true
+	}
+	return false
 }
 
 // paramsToMap 将 ExtractedParams 转为 map[string]any 用于缓存 key
@@ -94,6 +116,42 @@ func paramsToMap(p ExtractedParams) map[string]any {
 	if p.Days > 0 && p.Days != 7 {
 		m["days"] = p.Days
 	}
+	if p.DateFrom != "" {
+		m["dateFrom"] = p.DateFrom
+	}
+	if p.DateTo != "" {
+		m["dateTo"] = p.DateTo
+	}
+	if p.AllDates {
+		m["allDates"] = true
+	}
+	if p.Tag != "" {
+		m["tag"] = p.Tag
+	}
+	if len(p.Labels) > 0 {
+		m["labels"] = strings.Join(p.Labels, ",")
+	}
+	if p.PopType > 0 {
+		m["popType"] = p.PopType
+	}
+	if p.TopN > 0 {
+		m["topN"] = p.TopN
+	}
+	if p.Area != "" {
+		m["area"] = p.Area
+	}
+	if p.Community != "" {
+		m["community"] = p.Community
+	}
+	if p.GridName != "" {
+		m["gridName"] = p.GridName
+	}
+	if p.CaseType != "" {
+		m["caseType"] = p.CaseType
+	}
+	if p.HolidayName != "" {
+		m["holidayName"] = p.HolidayName
+	}
 	return m
 }
 
@@ -104,7 +162,8 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 
 	// Check cache first
 	if intent.Cacheable {
-		cacheKey = BuildCacheKey(intent.Topic, intent.Intent, intent.DatabaseId, intent.Params)
+		days := paramDays(intent.Params)
+		cacheKey = BuildCacheKey(intent.Topic, intent.Intent, intent.DatabaseId, days, intent.Params)
 		ttl = intentTTL(intent.Intent)
 		if cached, hit := GetCache(ctx, cacheKey); hit {
 			cached.CacheHit = true
@@ -153,7 +212,7 @@ func executeFastPathIntent(ctx context.Context, intent *FastPathIntent) (*FastPa
 	// Write result to cache
 	if intent.Cacheable {
 		if cacheKey == "" {
-			cacheKey = BuildCacheKey(intent.Topic, intent.Intent, intent.DatabaseId, intent.Params)
+			cacheKey = BuildCacheKey(intent.Topic, intent.Intent, intent.DatabaseId, paramDays(intent.Params), intent.Params)
 		}
 		SetCache(ctx, cacheKey, result)
 	}
@@ -169,7 +228,7 @@ func (c *ControllerV1) streamFastPathIntentAnswer(ctx context.Context, intent *F
 	cacheKey := ""
 	ttl := time.Duration(0)
 	if intent.Cacheable {
-		cacheKey = BuildCacheKey(intent.Topic, intent.Intent, intent.DatabaseId, intent.Params)
+		cacheKey = BuildCacheKey(intent.Topic, intent.Intent, intent.DatabaseId, paramDays(intent.Params), intent.Params)
 		ttl = intentTTL(intent.Intent)
 	}
 	consts.Logger.Infof(ctx, "perf ask_number_fast_path intent=%s topic=%s databaseId=%d cacheHit=%v cacheKey=%s ttl=%s queryMs=%d formatMs=%d totalMs=%d chart=%v formatVersion=%s",
@@ -190,6 +249,8 @@ func (c *ControllerV1) streamFastPathIntentAnswer(ctx context.Context, intent *F
 		"totalMs":    result.TotalMs,
 		"databaseId": intent.DatabaseId,
 		"format":     result.Format,
+		"chartData":  result.ChartData,
+		"allDates":   intent.Params["allDates"] != nil,
 	}
 	if intent.Cacheable {
 		sseData["cacheKey"] = cacheKey
@@ -284,6 +345,8 @@ func fastPathChartRule(fp *fastPath, chartData string) string {
 		return "line_trend"
 	case fpTrafficTopGateToday, fpTrafficGateRank, fpTrafficForeignOrigin, fpPopRegionRank, fpGridRegionRank, fpTrafficDwellTop:
 		return "bar_rank"
+	case fpPopRegionProportion:
+		return "pie"
 	case fpTrafficWeekendCompare, fpTrafficHolidayCompare:
 		return "bar_compare"
 	case fpPopHourlyTrend:
@@ -294,6 +357,36 @@ func fastPathChartRule(fp *fastPath, chartData string) string {
 		return "line_trend"
 	case fpPopFloatingAnomaly:
 		return "bar_rank"
+	case fpPopTagDistribution:
+		return "pie"
+	case fpPopTagTopN:
+		return "bar_rank"
+	case fpPopTagTrend:
+		return "line_trend"
+	case fpTrafficHkMacau:
+		return "pie"
+	case fpTrafficInOutRatio:
+		return "pie"
+	case fpTrafficHkMacauStay:
+		return "bar_rank"
+	case fpTrafficMultiGateCompare:
+		return "line_trend"
+	case fpTrafficHkMacauYoY:
+		return "bar_compare"
+	case fpPopTagProportion:
+		return "pie"
+	case fpPopMultiTagTrend:
+		return "line_trend"
+	case fpPopComprehensive:
+		return "line_trend,bar_rank,pie"
+	case fpPopMultiTagCompare:
+		return "pie,bar_rank"
+	case fpPopActivationSummary:
+		return "metric_card"
+	case fpPopActivationTrend:
+		return "line_trend"
+	case fpPopPortrait:
+		return "metric_card,line_trend,pie,bar_rank"
 	case fpGridCaseTypeDist:
 		return "pie"
 	case fpTrafficOverview:
@@ -302,6 +395,8 @@ func fastPathChartRule(fp *fastPath, chartData string) string {
 		return "line_trend,bar_rank"
 	case fpGridOverview:
 		return "bar_rank,pie"
+	case fpGridAvgHandle:
+		return "metric_card"
 	default:
 		return "chart"
 	}
@@ -333,6 +428,8 @@ func fastPathIntentName(kind fastPathKind) string {
 		return "population.compare.holiday"
 	case fpPopRegionRank:
 		return "population.rank.region"
+	case fpPopRegionProportion:
+		return "population.proportion.region"
 	case fpPopHourlyTrend:
 		return "population.trend.hourly"
 	case fpPopYoY:
@@ -341,6 +438,18 @@ func fastPathIntentName(kind fastPathKind) string {
 		return "population.compare.multi_region"
 	case fpPopFloatingAnomaly:
 		return "population.floating.anomaly"
+	case fpPopTagDistribution:
+		return "population.tag.distribution"
+	case fpPopTagTopN:
+		return "population.tag.topn"
+	case fpPopTagTrend:
+		return "population.tag.trend"
+	case fpPopActivationSummary:
+		return "population.activation.summary"
+	case fpPopActivationTrend:
+		return "population.activation.trend"
+	case fpPopPortrait:
+		return "population.portrait"
 	case fpGridCaseCount:
 		return "grid.case.count"
 	case fpGridCloseRate:
@@ -363,13 +472,41 @@ func fastPathIntentName(kind fastPathKind) string {
 		return "traffic.dwell.hk_macau_distribution"
 	case fpTrafficOriginByProvince:
 		return "traffic.rank.origin_province"
+	case fpTrafficInOutRatio:
+		return "traffic.ratio.in_out"
+	case fpTrafficMultiGateCompare:
+		return "traffic.compare.multi_gate"
+	case fpTrafficHkMacauYoY:
+		return "traffic.compare.hk_macau_yoy"
 	case fpTrafficOverview:
 		return "traffic.overview"
 	case fpPopOverview:
 		return "population.overview"
+	case fpPopTagProportion:
+		return "population.tag.proportion"
+	case fpPopMultiTagTrend:
+		return "population.tag.multi_trend"
+	case fpPopComprehensive:
+		return "population.comprehensive"
+	case fpPopMultiTagCompare:
+		return "population.compare.multi_tag"
 	case fpGridOverview:
 		return "grid.overview"
+	case fpGridAvgHandle:
+		return "grid.handle.avg"
 	default:
 		return "unknown"
 	}
+}
+
+func paramDays(params map[string]any) int {
+	if v, ok := params["days"]; ok {
+		switch d := v.(type) {
+		case int:
+			return d
+		case float64:
+			return int(d)
+		}
+	}
+	return 7
 }

@@ -12,6 +12,8 @@ import (
 	einoTool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	gMcp "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 const mcpToolCacheTTL = 30 * time.Minute
@@ -61,7 +63,7 @@ func (t *cachedMCPTool) InvokableRun(ctx context.Context, argumentsInJSON string
 }
 
 func getCachedMCPTools(ctx context.Context, handler func(ctx context.Context, name string, result *gMcp.CallToolResult) (*gMcp.CallToolResult, error)) ([]einoTool.BaseTool, error) {
-	now := time.Now()
+	now := gtime.Now().Time
 	cachedMCPTools.mu.RLock()
 	if len(cachedMCPTools.infos) > 0 && now.Before(cachedMCPTools.expiresAt) {
 		infos := append([]*schema.ToolInfo(nil), cachedMCPTools.infos...)

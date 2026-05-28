@@ -19,6 +19,7 @@ type ChatInput struct {
 	Source        string            `json:"source" dc:"来源：topic_entry|alert_click"`
 	AlertId       int               `json:"alertId" dc:"告警ID，点击告警自动提问时传入"`
 	History       []ChatHistoryItem `json:"history" dc:"前端补充的历史消息"`
+	Context       []ChatHistoryItem `json:"context" dc:"history的别名，兼容前端字段名"`
 }
 
 type ChatHistoryItem struct {
@@ -49,6 +50,10 @@ func GenChatOutDataItem(ctx context.Context, in ChatOutDataItem) ChatOutDataItem
 
 func SendChatOutDataItem(ctx context.Context, in ChatOutDataItem, respChan chan any) (err error) {
 	item := GenChatOutDataItem(ctx, in)
-	respChan <- item
+	select {
+	case respChan <- item:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	return
 }

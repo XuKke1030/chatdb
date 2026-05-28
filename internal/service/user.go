@@ -22,9 +22,7 @@ type (
 		// GetUserInfoById 根据用户ID获取用户信息
 		GetUserInfoById(ctx context.Context, userId int64) (user *entity.User, err error)
 		// GenPassword 生成密码
-		GenPassword(password string, code int) (out string, err error)
-		// GetUserVerifyCode 获取用户验证码
-		GetUserVerifyCode() (code int)
+		GenPassword(password string) (out string, err error)
 		// UsernameIsExist 用户名是否存在
 		UsernameIsExist(ctx context.Context, username string) (exist bool, err error)
 	}

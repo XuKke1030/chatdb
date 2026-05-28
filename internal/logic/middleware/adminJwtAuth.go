@@ -13,8 +13,8 @@ import (
 // AdminJwtAuth rejects requests without a valid admin JWT.
 // /admin/login is exempted (it has noAuth:"true" in API definition).
 func (s *sMiddleware) AdminJwtAuth(r *ghttp.Request) {
-	// Skip auth for login endpoint
-	if strings.HasSuffix(r.URL.Path, "/admin/login") {
+	// Skip auth for login endpoint (exact match to prevent path-traversal bypass)
+	if r.URL.Path == "/api/v1/admin/login" {
 		r.Middleware.Next()
 		return
 	}

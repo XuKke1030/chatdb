@@ -8,11 +8,11 @@
 -- 1. 项目系统表测试数据
 -- ============================================================
 
--- 插入测试用户（密码示例值，实际使用需加密）
+-- 插入测试用户（密码为 MD5("123456")）
 INSERT INTO `user` (`username`, `password`, `verify`, `rule_level`, `last_login_tme`, `create_time`, `update_time`) VALUES
-('admin', 'e10adc3949ba59abbe56e057f20f883e', 1, 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP()),
-('zhangsan', 'e10adc3949ba59abbe56e057f20f883e', 1, 2, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP()),
-('lisi', 'e10adc3949ba59abbe56e057f20f883e', 1, 2, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP()),
+('admin', 'e10adc3949ba59abbe56e057f20f883e', 0, 1, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP()),
+('zhangsan', 'e10adc3949ba59abbe56e057f20f883e', 0, 2, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP()),
+('lisi', 'e10adc3949ba59abbe56e057f20f883e', 0, 2, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP()),
 ('wangwu', 'e10adc3949ba59abbe56e057f20f883e', 0, 2, 0, UNIX_TIMESTAMP(), UNIX_TIMESTAMP());
 
 -- 插入数据库配置

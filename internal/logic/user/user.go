@@ -8,11 +8,9 @@ import (
 	"ai-chat-sql/internal/model/entity"
 	"ai-chat-sql/internal/service"
 	"context"
-	"fmt"
 
 	"github.com/gogf/gf/v2/crypto/gmd5"
 	"github.com/gogf/gf/v2/frame/g"
-	"github.com/gogf/gf/v2/util/grand"
 )
 
 type sUser struct {
@@ -34,7 +32,7 @@ func (s *sUser) Login(ctx context.Context, in model.UserLoginInput) (user *entit
 		return
 	}
 	// 验证密码是否正确
-	password, err := s.GenPassword(in.Password, user.Verify)
+	password, err := s.GenPassword(in.Password)
 	if err != nil {
 		return
 	}
@@ -63,10 +61,8 @@ func (s *sUser) Register(ctx context.Context, verify bool, in model.UserRegister
 		err = code.ToError(code.UsernameExist)
 		return
 	}
-	// 生成验证码
-	code := s.GetUserVerifyCode()
 	// 生成密码
-	password, err := s.GenPassword(in.Password, code)
+	password, err := s.GenPassword(in.Password)
 	if err != nil {
 		return
 	}
@@ -74,7 +70,6 @@ func (s *sUser) Register(ctx context.Context, verify bool, in model.UserRegister
 	userId, err = dao.User.Ctx(ctx).Data(g.Map{
 		"username":   in.Username,
 		"password":   password,
-		"verify":     code,
 		"rule_level": 1,
 	}).InsertAndGetId()
 	return
@@ -93,19 +88,14 @@ func (s *sUser) GenJwtTokenByUserId(ctx context.Context, userId int64) (out *mod
 }
 
 // GenPassword 生成密码
-func (s *sUser) GenPassword(password string, code int) (out string, err error) {
-	out, err = gmd5.Encrypt(fmt.Sprintf("ai-chat:%s:%d", password, code))
+func (s *sUser) GenPassword(password string) (out string, err error) {
+	out, err = gmd5.Encrypt(password)
 	if err != nil {
 		return
 	}
 	return
 }
 
-// GetUserVerifyCode 获取用户验证码
-func (s *sUser) GetUserVerifyCode() (code int) {
-	code = grand.N(10000, 99999)
-	return
-}
 
 // GetUserInfoById 根据用户ID获取用户信息
 func (s *sUser) GetUserInfoById(ctx context.Context, userId int64) (user *entity.User, err error) {

@@ -142,6 +142,9 @@ func (s *sTraffic) StayDistribution(ctx context.Context, dateFrom, dateTo, regio
 	if region != "" {
 		m = m.Where("region LIKE ?", "%"+strings.TrimSpace(region)+"%")
 	}
+	if isHkMacau == "1" {
+		m = m.Where("is_hk_macau = ?", isHkMacau)
+	}
 	records, err := m.Fields("bucket, SUM(vehicle_count) AS vehicle_count, AVG(avg_stay_minutes) AS avg_stay_minutes").
 		Group("bucket").
 		Order("bucket ASC").
@@ -198,7 +201,7 @@ func (s *sTraffic) YoYCompare(ctx context.Context, dateFrom, dateTo, groupBy str
 	groupBy = normalizeTrafficGroupBy(groupBy)
 	now := gtime.Now()
 	if dateFrom == "" {
-		dateFrom = now.AddDate(0, 0, -6).Format("Y-m-d")
+		dateFrom = now.AddDate(0, 0, -defaultRefreshDays+1).Format("Y-m-d")
 	}
 	if dateTo == "" {
 		dateTo = now.Format("Y-m-d") + " 23:59:59"

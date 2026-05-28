@@ -62,14 +62,14 @@ func (s *sJwt) VerifyToken(ctx context.Context, in *model.JWTVerifyTokenInput) (
 	if err != nil {
 		return
 	}
-	// 解析并验证令牌
+	// 解析并验证令牌，允许30秒时钟偏移容忍
 	parsedToken, err := jwt.Parse(in.Token, func(t *jwt.Token) (interface{}, error) {
 		// 检查签名算法
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return []byte(option.Secret), nil
-	})
+	}, jwt.WithLeeway(30*time.Second))
 	if err != nil {
 		return
 	}

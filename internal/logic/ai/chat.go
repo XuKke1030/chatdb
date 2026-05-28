@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 	"github.com/gogf/gf/v2/util/gconv"
 	gMcp "github.com/mark3labs/mcp-go/mcp"
 )
@@ -40,10 +41,11 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	defer func() {
 		consts.Logger.Infof(ctx, "perf ask_number_ai stage=total topic=%s databaseId=%d sessionId=%s costMs=%d", in.Topic, in.DatabaseId, in.SessionId, time.Since(totalStart).Milliseconds())
 	}()
+	closer := newChanCloser(respChan)
 	defer func() {
 		if err != nil {
 			respChan <- err
-			close(respChan)
+			closer.Close()
 		}
 	}()
 	// 发送开始包
@@ -88,7 +90,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	aiAgent, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: llm,
 		ToolsConfig:      compose.ToolsNodeConfig{Tools: mcpTools},
-		MaxStep:          8,
+		MaxStep:          25,
 		// 自定义 StreamToolCallChecker：DeepSeek 等模型会先输出文本再输出 tool calls
 		// 默认实现只检查第一个 chunk，会导致 tool calls 被忽略
 		StreamToolCallChecker: func(ctx context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
@@ -136,7 +138,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	messages := []*schema.Message{
 		{
 			Role:    schema.System,
-			Content: prompt.GetContent(in.DatabaseId, dbTypeT.String()),
+			Content: prompt.GetContent(gtime.Now().Format("Y-m-d"), in.DatabaseId, dbTypeT.String()),
 		},
 		{
 			Role:    schema.System,
@@ -189,12 +191,12 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 				Data:  g.Map{"message": "查询超时，请尝试简化问题或换一种问法"},
 			}, respChan)
 			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
-			close(respChan)
+			closer.Close()
 		}
 		return
 	}
 	logStage("agent_stream")
 
 	// AI输出流
-	s.AiChatStreamOut(ctx, respChan, out, cancel)
+	s.AiChatStreamOut(ctx, closer, out, cancel)
 }

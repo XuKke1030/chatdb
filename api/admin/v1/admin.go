@@ -25,8 +25,9 @@ type AdminLoginReq struct {
 }
 
 type AdminLoginRes struct {
-	Token    string `json:"token"`
-	Username string `json:"username"`
+	Token     string `json:"token"`
+	Username  string `json:"username"`
+	UserToken string `json:"userToken"`
 }
 
 type AdminProfileReq struct {
@@ -507,7 +508,8 @@ type AdminCaseDeleteReq struct {
 type AdminCaseDeleteRes struct{}
 
 type AdminCaseDeleteAllReq struct {
-	g.Meta `path:"/admin/cases/all" method:"delete" tags:"V1/Admin" sm:"delete all cases"`
+	g.Meta   `path:"/admin/cases/all" method:"delete" tags:"V1/Admin" sm:"delete all cases"`
+	Confirm  bool `json:"confirm" v:"required#确认参数不能为空" dc:"必须为true才执行删除"`
 }
 
 type AdminCaseDeleteAllRes struct {
@@ -761,4 +763,41 @@ type AdminDocumentRecommendationsReq struct {
 
 type AdminDocumentRecommendationsRes struct {
 	List []DocumentRelationItem `json:"list"`
+}
+
+type AdminAutoDiscoverRelationsReq struct {
+	g.Meta       `path:"/admin/document-relations/auto" method:"post" tags:"V1/Admin" sm:"auto discover document relations"`
+	KnowledgeCode string `json:"knowledgeCode" dc:"仅在此知识库范围内发现，不传则全库扫描"`
+	DryRun        *bool   `json:"dryRun" dc:"仅返回候选不实际写入，默认true"`
+}
+
+type AdminAutoDiscoverRelationsRes struct {
+	Discovered []AutoDiscoverItem `json:"discovered"`
+	Created    int                `json:"created"`
+}
+
+type AutoDiscoverItem struct {
+	FromDocId    int64  `json:"fromDocId"`
+	FromDocTitle string `json:"fromDocTitle"`
+	ToDocId      int64  `json:"toDocId"`
+	ToDocTitle   string `json:"toDocTitle"`
+	RelType      string `json:"relType"`
+	Reason       string `json:"reason"`
+}
+
+type AdminComplianceCheckReq struct {
+	g.Meta       `path:"/admin/documents/compliance" method:"post" tags:"V1/Admin" sm:"check document compliance issues"`
+	KnowledgeCode string `json:"knowledgeCode" dc:"仅检查此知识库，不传则全库"`
+}
+
+type AdminComplianceCheckRes struct {
+	Issues []ComplianceIssue `json:"issues"`
+}
+
+type ComplianceIssue struct {
+	DocumentId    int64  `json:"documentId"`
+	DocumentTitle string `json:"documentTitle"`
+	IssueType     string `json:"issueType"`
+	Description   string `json:"description"`
+	Severity      string `json:"severity"`
 }

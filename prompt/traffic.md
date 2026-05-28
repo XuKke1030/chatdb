@@ -4,6 +4,8 @@
 
 对外回答必须使用自然语言，不要暴露 SQL、表名、字段名、接口名、工具调用或程序实现。内部查询必须使用 SQL_Actuator 获取真实数据，不能凭空估算。
 
+**日期参数规则**：SQL 中禁止使用 `CURDATE()`、`NOW()` 等数据库时间函数，必须将日期作为参数传入（使用 `?` 占位符）。系统会在调用时自动注入当前日期，确保应用端时间与数据库时钟一致。
+
 ## 车流常见指标
 
 - 车流总量
@@ -32,6 +34,75 @@
 10. 外地车来源地排名：省市来源 TopN。
 11. 外地车停留时长：外地车平均停留、长停留车辆。
 12. 模糊提问：如"最近车多不多""哪个口岸压力最大"。
+
+## 车流表结构与用途
+
+| 表 | 日期列 | 用途 |
+|---|---|---|
+| traffic_gate_record | snapshot_time | 卡口过车原始记录（有 device_id/device_name、plate_normalized 车牌、is_hk_macau 港澳标识、plate_origin 归属地、vehicle_type 车型等） |
+| traffic_metric_daily | metric_date | 车流日聚合统计（含 total 总量、hk_macau_count 港澳车数、mainland_count 内地车数、province_inside_count 省内车数、in_count 进方向、out_count 出方向） |
+
+**查询时必须使用对应表的日期列名和字段名，不要混用。**
+
+### 车流查询优先路径
+
+问"今天车流多少""港澳车占比""哪个卡口车最多"等问题时：
+1. 优先查 `traffic_metric_daily`（聚合表，查一次即可得总量、港澳、内地、进出等全部指标）
+2. 如果聚合表无当天数据，再查 `traffic_gate_record` 原始记录进行汇总
+
+### 常见车流查询 SQL 模式
+
+今日总量 + 港澳占比（聚合表）：
+```sql
+SELECT total, hk_macau_count, mainland_count, province_inside_count, in_count, out_count
+FROM traffic_metric_daily
+WHERE metric_date = DATE(?) AND device_name = '全站'
+```
+
+今日总量 + 港澳占比（原始表兜底）：
+```sql
+SELECT COUNT(*) AS total,
+       SUM(is_hk_macau) AS hk_macau_count,
+       SUM(IF(is_hk_macau=0,1,0)) AS mainland_count
+FROM traffic_gate_record
+WHERE snapshot_time >= DATE(?) AND snapshot_time < DATE_ADD(DATE(?), INTERVAL 1 DAY)
+```
+
+卡口排名：
+```sql
+SELECT device_name, COUNT(*) AS total
+FROM traffic_gate_record
+WHERE snapshot_time >= ? AND snapshot_time < DATE_ADD(?, INTERVAL 1 DAY)
+GROUP BY device_name ORDER BY total DESC LIMIT 10
+```
+
+近7天趋势：
+```sql
+SELECT DATE(snapshot_time) AS d, COUNT(*) AS total,
+       SUM(is_hk_macau) AS hk_macau_count
+FROM traffic_gate_record
+WHERE snapshot_time >= DATE_SUB(DATE(?), INTERVAL 7 DAY)
+GROUP BY d ORDER BY d
+```
+
+港澳车占比明细（原始表）：
+```sql
+SELECT COUNT(*) AS total,
+       SUM(is_hk_macau) AS hk_macau_count,
+       SUM(IF(is_hk_macau=0 AND LEFT(plate_normalized,1)='粤',1,0)) AS province_inside_count,
+       SUM(IF(is_hk_macau=0,1,0)) AS mainland_count
+FROM traffic_gate_record
+WHERE snapshot_time >= ? AND snapshot_time < DATE_ADD(?, INTERVAL 1 DAY)
+```
+
+省内车占比（原始表）：
+```sql
+SELECT COUNT(*) AS total,
+       SUM(IF(LEFT(plate_normalized,1)='粤',1,0)) AS province_inside_count,
+       SUM(is_hk_macau) AS hk_macau_count
+FROM traffic_gate_record
+WHERE snapshot_time >= ? AND snapshot_time < DATE_ADD(?, INTERVAL 1 DAY)
+```
 
 ## 优先业务口径
 
@@ -95,8 +166,13 @@
 ### 港澳车占比
 
 - 必须基于数据库中能识别港澳车的真实结果统计。
-- 占比必须由港澳车数量和总车流量计算得出。
-- 如果只是单一占比问题，不输出可视化；如果需要展示车辆构成，可以输出 `pie` 图。
+- 标准口径：港澳车占比 = 港澳车数量 / 总车流量 * 100%；内地车占比 = 内地车数量 / 总车流量 * 100%。
+- 总车流量、港澳车数量、内地车数量都必须来自同一次查询或同一统计周期的查询结果，不能沿用上一轮数字。
+- 用户问"今日/今天"时必须按当天统计；问"过去所有日期/所有日期/全部日期"时按当前可用全部日期范围统计；问"一个月内/近一个月/最近一个月/近30天"时按近 30 天统计。
+- 用户追问"一个月内呢""今天呢""过去所有日期呢"时，继承上一轮"港澳车占比"指标，只替换时间范围并重新查询。
+- 如果总车流量为 0 或未查询到记录，不得计算港澳车占比、内地车占比，不得输出"港澳车 0 辆、内地车占比 100.0%"。应回答："{时间范围}未查询到车流记录，无法计算港澳车占比。"
+- 如果总车流量大于 0，优先使用以下结论模板："{时间范围}，总车流 {total} 辆，其中港澳车 {hkMacauCount} 辆，占比 {hkRatio}%；内地车 {mainlandCount} 辆，占比 {mainlandRatio}%。"
+- 如果只是单一占比问题，不输出可视化；只有用户明确要求车辆构成、分类分布或需要多类别对比，且总车流量大于 0 时，才可以输出 `pie` 图。
 
 ### 车辆轨迹
 
@@ -151,3 +227,12 @@
 - 峰值卡口、峰值时段、异常增长、进出方向不均衡、长时间无数据。
 - 对通行保障、口岸服务、交通疏导、设备运维和治理调度的影响。
 - 可落地建议，例如关注高峰时段、增派疏导力量、核查离线设备、复盘异常增长原因。
+
+## 广泛问题处理
+
+用户问"车流怎么样""最近车流呢"等广泛问题时，只查当日车流总量和港澳车占比（从 `traffic_metric_daily` 一条查询即可），给出概览后列出追问方向：
+- 近7天趋势
+- 哪个卡口最忙
+- 港澳车停留时长
+- 省内/省外占比
+不要试图一次查完趋势+排名+停留+来源，步骤会耗尽。

@@ -3,17 +3,35 @@ package ai
 import (
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/model"
+	"ai-chat-sql/utility"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/util/gconv"
 )
+
+// chanCloser 安全地关闭 channel，防止重复 close 导致 panic
+type chanCloser struct {
+	ch   chan any
+	once sync.Once
+}
+
+func newChanCloser(ch chan any) *chanCloser {
+	return &chanCloser{ch: ch}
+}
+
+func (c *chanCloser) Close() {
+	c.once.Do(func() {
+		close(c.ch)
+	})
+}
 
 // streamState 流式输出状态机
 type streamState int
@@ -33,12 +51,13 @@ const clarifyPrefix = "```chatdb-clarify"
 // clarifyPrefixLen 澄清块前缀长度，用于初始判定窗口
 const clarifyDetectWindow = 30
 
-// sendStreamError 向 SSE 通道发送错误事件
+// sendStreamError 向 SSE 通道发送错误事件，对用户隐藏内部错误细节
 func sendStreamError(ctx context.Context, respChan chan any, err error) {
+	consts.Logger.Errorf(ctx, "流错误: %v", err)
 	_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 		Event: "error",
 		Data: g.Map{
-			"message": err.Error(),
+			"message": utility.SafeUserErr(err),
 		},
 	}, respChan)
 }
@@ -48,9 +67,10 @@ type chunkResult struct {
 	err   error
 }
 
-func (s *sAiChat) AiChatStreamOut(ctx context.Context, respChan chan any, stream *schema.StreamReader[*schema.Message], cancel context.CancelFunc) {
+func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, stream *schema.StreamReader[*schema.Message], cancel context.CancelFunc) {
+	respChan := closer.ch
 	g.Go(ctx, func(ctx context.Context) {
-		defer close(respChan)
+		defer closer.Close()
 
 		state := stateBuffering
 		var buffer strings.Builder
@@ -67,6 +87,11 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, respChan chan any, stream
 			}()
 
 			select {
+			case <-ctx.Done():
+				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
+				cancel()
+				return
+
 			case <-timeoutCh:
 				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 					Event: "error",
@@ -191,11 +216,25 @@ func emitClarification(ctx context.Context, respChan chan any, raw string) {
 func (s *sAiChat) AiChatHeartbeat(ctx context.Context, respChan chan any) {
 	g.Go(ctx, func(ctx context.Context) {
 		ticker := time.NewTicker(time.Millisecond * 1500)
-		respChan <- "event: ping"
+		sendPing := func() bool {
+			select {
+			case respChan <- "event: ping":
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		if !sendPing() {
+			ticker.Stop()
+			return
+		}
 		for {
 			select {
 			case <-ticker.C:
-				respChan <- "event: ping"
+				if !sendPing() {
+					ticker.Stop()
+					return
+				}
 			case <-ctx.Done():
 				ticker.Stop()
 				return

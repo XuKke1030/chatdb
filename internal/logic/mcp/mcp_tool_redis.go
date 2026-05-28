@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"ai-chat-sql/internal/consts"
+	"ai-chat-sql/utility"
 	"context"
 	"errors"
 	"fmt"
@@ -27,9 +28,8 @@ func (s *sMcpTool) ExecRedisCommand(ctx context.Context, request mcp.CallToolReq
 	if argsStr != "" {
 		var argsArray []string
 		if err = gjson.Unmarshal([]byte(argsStr), &argsArray); err != nil {
-			errMsg := fmt.Sprintf("参数解析失败: %s", err.Error())
-			consts.Logger.Error(ctx, errMsg)
-			out = mcp.NewToolResultText(errMsg)
+			consts.Logger.Errorf(ctx, "Redis 参数解析失败: %v", err)
+			out = mcp.NewToolResultText(utility.SafeUserErr(err))
 			err = nil
 			return
 		}
@@ -43,9 +43,8 @@ func (s *sMcpTool) ExecRedisCommand(ctx context.Context, request mcp.CallToolReq
 	// 获取 Redis 连接
 	conn, err := g.Redis().Conn(ctx)
 	if err != nil {
-		errMsg := fmt.Sprintf("Redis连接失败: %s", err.Error())
-		consts.Logger.Error(ctx, errMsg)
-		out = mcp.NewToolResultText(errMsg)
+		consts.Logger.Errorf(ctx, "Redis连接失败: %v", err)
+		out = mcp.NewToolResultText(utility.SafeUserErr(err))
 		err = nil
 		return
 	}
@@ -54,9 +53,8 @@ func (s *sMcpTool) ExecRedisCommand(ctx context.Context, request mcp.CallToolReq
 	// 执行 Redis 命令
 	result, err := conn.Do(ctx, command, args...)
 	if err != nil {
-		errMsg := fmt.Sprintf("Redis命令执行失败: %s", err.Error())
-		consts.Logger.Error(ctx, errMsg)
-		out = mcp.NewToolResultText(errMsg)
+		consts.Logger.Errorf(ctx, "Redis命令执行失败: %v", err)
+		out = mcp.NewToolResultText(utility.SafeUserErr(err))
 		err = nil
 		return
 	}

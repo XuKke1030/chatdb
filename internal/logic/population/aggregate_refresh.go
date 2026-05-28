@@ -2,9 +2,9 @@ package population
 
 import (
 	"context"
-	"time"
 
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 func (s *sPopulation) RefreshAggregates(ctx context.Context, dateFrom string, dateTo string) error {
@@ -15,17 +15,22 @@ func (s *sPopulation) RefreshAggregates(ctx context.Context, dateFrom string, da
 	if err := s.refreshPopulationDaily(ctx, from, to); err != nil {
 		return err
 	}
-	return s.refreshPopulationFloatingDaily(ctx, from, to)
+	if err := s.refreshPopulationFloatingDaily(ctx, from, to); err != nil {
+		return err
+	}
+	return s.refreshPopulationTagDaily(ctx, from, to)
 }
+
+const defaultRefreshDays = 7
 
 func normalizePopWindow(dateFrom string, dateTo string) (string, string) {
 	from := dateFrom
 	to := dateTo
 	if from == "" {
-		from = time.Now().AddDate(0, 0, -7).Format("2006-01-02 00:00:00")
+		from = gtime.Now().AddDate(0, 0, -defaultRefreshDays).Format("Y-m-d H:i:s")
 	}
 	if to == "" {
-		to = time.Now().Format("2006-01-02 23:59:59")
+		to = gtime.Now().Format("Y-m-d") + " 23:59:59"
 	}
 	return from, to
 }
@@ -62,7 +67,7 @@ func (s *sPopulation) refreshPopulationDaily(ctx context.Context, from string, t
 	if _, err := db.Exec(ctx, "DELETE FROM population_metric_daily WHERE metric_date >= DATE(?) AND metric_date <= DATE(?)", from, to); err != nil {
 		return err
 	}
-	_, err := db.Exec(ctx, `
+	if _, err := db.Exec(ctx, `
 INSERT INTO population_metric_daily (
 	metric_date, region, grid_name,
 	in_count, out_count, net_in_count, floating_population_count,
@@ -80,8 +85,10 @@ SELECT
 	UNIX_TIMESTAMP() AS update_time
 FROM population_flow_record
 WHERE metric_time >= ? AND metric_time <= ?
-GROUP BY metric_date, region, grid_name`, from, to)
-	return err
+GROUP BY metric_date, region, grid_name`, from, to); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *sPopulation) refreshPopulationFloatingDaily(ctx context.Context, from string, to string) error {
@@ -105,5 +112,19 @@ SELECT
 FROM population_flow_record
 WHERE metric_time >= ? AND metric_time <= ?
 GROUP BY metric_date, region, grid_name`, from, to)
+	return err
+}
+
+func (s *sPopulation) refreshPopulationTagDaily(ctx context.Context, from, to string) error {
+	db := g.DB("master")
+	if _, err := db.Exec(ctx, "DELETE FROM population_tag_daily WHERE day >= DATE(?) AND day <= DATE(?)", from, to); err != nil {
+		return err
+	}
+	_, err := db.Exec(ctx, `
+INSERT INTO population_tag_daily (day, area, tag, label, type, label_cnt, update_time)
+SELECT day, COALESCE(area,''), tag, label, type, SUM(label_cnt), UNIX_TIMESTAMP()
+FROM mobile_day_flow_tag
+WHERE day >= DATE(?) AND day <= DATE(?)
+GROUP BY day, area, tag, label, type`, from, to)
 	return err
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/os/gtime"
 
 	v1 "ai-chat-sql/api/ai_chat/v1"
 )
@@ -42,7 +43,7 @@ func (c *ControllerV1) SetDataBaseConfig(ctx context.Context, req *v1.SetDataBas
 	}
 
 	// 创建新的数据库配置
-	now := time.Now().Unix()
+	now := gtime.Now().Timestamp()
 
 	// 使用map来避免零值问题，让数据库使用自增ID
 	dbConfig := g.Map{
@@ -98,7 +99,7 @@ func (c *ControllerV1) UpdateDataBaseConfig(ctx context.Context, req *v1.UpdateD
 	}
 
 	// 更新数据库配置
-	now := time.Now().Unix()
+	now := gtime.Now().Timestamp()
 	updateData := g.Map{
 		"db_name":     req.DbName,
 		"user_name":   req.UserName,

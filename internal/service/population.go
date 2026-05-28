@@ -11,6 +11,7 @@ type (
 		RefreshAggregates(ctx context.Context, dateFrom, dateTo string) error
 		Aggregate(ctx context.Context, query model.PopulationAggregateQuery) (*model.PopulationAggregateResult, error)
 		YoYCompare(ctx context.Context, dateFrom, dateTo, groupBy string) ([]model.PopulationYoYItem, error)
+		TagDistribution(ctx context.Context, query model.TagDistributionQuery) (*model.TagDistributionResult, error)
 	}
 )
 

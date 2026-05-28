@@ -166,6 +166,10 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	if err != nil {
 		return nil, err
 	}
+	// Normalize: "context" is an alias for "history" (frontend compat)
+	if len(req.Context) > 0 && len(req.History) == 0 {
+		req.History = req.Context
+	}
 	history := mergeQaHistory(storedHistory, req.History)
 	logStage("history")
 	if _, err = appendQaMessage(ctx, userId, sessionId, knowledgeCode, "user", message); err != nil {
@@ -182,7 +186,7 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	}
 	logStage("citation")
 
-	respChan := make(chan any)
+	respChan := make(chan any, 64)
 	g.Go(ctx, func(ctx context.Context) {
 		streamQaChat(ctx, req, userId, sessionId, knowledgeCode, message, history, items, citations, respChan, totalStart)
 	}, func(ctx context.Context, exception error) {
@@ -197,15 +201,28 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	logStage("first_sse_ready")
 
 	var jsonData []byte
-	for v := range respChan {
-		jsonData, err = json.Marshal(v)
-		if err != nil {
-			return nil, err
+	for {
+		select {
+		case <-ctx.Done():
+			consts.Logger.Infof(ctx, "QA SSE client disconnected, aborting stream knowledgeCode=%s sessionId=%s", strings.TrimSpace(req.KnowledgeCode), strings.TrimSpace(req.SessionId))
+			return nil, nil
+		case v, ok := <-respChan:
+			if !ok {
+				return nil, nil
+			}
+			jsonData, err = json.Marshal(v)
+			if err != nil {
+				return nil, err
+			}
+			r.Response.Writef("data: %s\n\n", jsonData)
+			if out, ok := v.(model.ChatOutDataItem); ok && out.Event == "end" {
+				r.Response.Writef("data: [DONE]\n\n")
+				r.Response.Flush()
+				return nil, nil
+			}
+			r.Response.Flush()
 		}
-		r.Response.Writef("data: %s\n\n", jsonData)
-		r.Response.Flush()
 	}
-	return nil, nil
 }
 
 func (c *ControllerV1) CitationDetail(ctx context.Context, req *v1.CitationDetailReq) (res *v1.CitationDetailRes, err error) {
@@ -286,6 +303,7 @@ func (c *ControllerV1) DocumentView(ctx context.Context, req *v1.DocumentViewReq
 			Content:      segment["content"].String(),
 			Page:         segment["page"].Int(),
 			Anchor:       segment["anchor"].String(),
+			IsFocused:    req.FocusSegmentId > 0 && segment["id"].Int64() == req.FocusSegmentId,
 		})
 	}
 	return &v1.DocumentViewRes{
@@ -677,6 +695,8 @@ type qaCitationEvent struct {
 	Score          float64
 	Content        string
 	SourceProvider string
+	EffectiveDate  string
+	RepealedBy     string
 }
 
 func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId string, knowledgeCode string, question string, history []model.ChatHistoryItem, items []v1.RetrieveItem, citations []qaCitationEvent, respChan chan any, requestStart time.Time) {
@@ -707,8 +727,9 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 	}, respChan)
 	logStage("send_retrieval")
 	var webItems []v1.WebSearchItem
+	var webResult *v1.WebSearchRes
 	if req.WebSearch {
-		webResult := qaWebSearchResult(ctx, question, knowledgeCode, 5)
+		webResult = qaWebSearchResult(ctx, question, knowledgeCode, 5)
 		webItems = webResult.List
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event: "web_search",
@@ -717,16 +738,48 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 	}
 	logStage("web_search")
 	if req.DeepThinking {
+		var thinkSteps []string
+		thinkSteps = append(thinkSteps, fmt.Sprintf("读取会话上下文：当前问题为「%s」", truncateRunes(question, 30)))
+		kbNames := make([]string, 0)
+		for _, item := range items {
+			found := false
+			for _, n := range kbNames {
+				if n == item.KnowledgeCode {
+					found = true
+					break
+				}
+			}
+			if !found {
+				kbNames = append(kbNames, item.KnowledgeCode)
+			}
+		}
+		if len(kbNames) > 0 {
+			thinkSteps = append(thinkSteps, fmt.Sprintf("校验文档库权限：可访问 %s 共 %d 个知识库", strings.Join(kbNames, "、"), len(kbNames)))
+		} else {
+			thinkSteps = append(thinkSteps, "校验文档库权限：当前用户无可用知识库")
+		}
+		hitDocs := make(map[string]bool)
+		for _, item := range items {
+			hitDocs[item.DocumentTitle] = true
+		}
+		if len(hitDocs) > 0 {
+			thinkSteps = append(thinkSteps, fmt.Sprintf("召回文档片段：命中 %d 篇文档、%d 个片段", len(hitDocs), len(items)))
+		} else {
+			thinkSteps = append(thinkSteps, "召回文档片段：未命中相关片段，将基于通用知识回答")
+		}
+		if req.WebSearch && webResult != nil && webResult.Enabled {
+			thinkSteps = append(thinkSteps, fmt.Sprintf("联网搜索：已通过 %s 补充 %d 条结果", webResult.Provider, len(webResult.List)))
+		} else if req.WebSearch {
+			thinkSteps = append(thinkSteps, "联网搜索：未启用，仅使用本地知识库")
+		}
+		thinkSteps = append(thinkSteps, "基于可用来源生成回答，标注引用编号")
+		for i, step := range thinkSteps {
+			thinkSteps[i] = filterSensitiveContent(step)
+		}
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event: "thinking",
 			Data: g.Map{
-				"steps": []string{
-					"读取当前会话问题和历史上下文",
-					"校验用户可访问的文档库范围",
-					"召回内部文档片段并准备引用来源",
-					"按开关补充联网搜索结果",
-					"基于可用来源生成回答",
-				},
+				"steps": thinkSteps,
 			},
 		}, respChan)
 	}
@@ -747,6 +800,8 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 				"score":          citation.Score,
 				"content":        citation.Content,
 				"sourceProvider": citation.SourceProvider,
+					"effectiveDate":  citation.EffectiveDate,
+					"repealedBy":     citation.RepealedBy,
 			},
 		}, respChan)
 	}
@@ -777,10 +832,43 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 	logStage("model_stream")
 
 	var assistantBuilder strings.Builder
+	var clarifyBuf strings.Builder
+	inClarify := false
 	firstTokenLogged := false
+	var sectionBuf strings.Builder
+	currentSection := ""
+	sectionMap := map[string]string{
+		"1. 核心结论": "conclusion",
+		"2. 关键依据": "evidence",
+		"3. 补充说明": "supplement",
+		"4. 后续建议": "suggestion",
+	}
+	sectionOrder := []string{"1. 核心结论", "2. 关键依据", "3. 补充说明", "4. 后续建议"}
+	flushSection := func() {
+		if sectionBuf.Len() == 0 || currentSection == "" {
+			return
+		}
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+			Event:   "section_start",
+			Content: currentSection,
+		}, respChan)
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+			Event:   currentSection,
+			Role:    "assistant",
+			Content: sectionBuf.String(),
+		}, respChan)
+		sectionBuf.Reset()
+	}
 	for {
+		select {
+		case <-ctx.Done():
+			consts.Logger.Infof(ctx, "QA stream context cancelled, stopping LLM read knowledgeCode=%s sessionId=%s", knowledgeCode, sessionId)
+			return
+		default:
+		}
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			flushSection()
 			if assistantBuilder.Len() > 0 {
 				assistantMessageId, saveErr := appendQaMessage(ctx, userId, sessionId, knowledgeCode, "assistant", assistantBuilder.String())
 				if saveErr != nil {
@@ -804,11 +892,97 @@ func streamQaChat(ctx context.Context, req *v1.ChatReq, userId int64, sessionId 
 			consts.Logger.Infof(ctx, "perf qa_stream stage=first_token knowledgeCode=%s sessionId=%s requestMs=%d", knowledgeCode, sessionId, time.Since(requestStart).Milliseconds())
 		}
 		assistantBuilder.WriteString(chunk.Content)
-		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
-			Event:   "message",
-			Role:    gconv.String(chunk.Role),
-			Content: chunk.Content,
-		}, respChan)
+
+		if inClarify {
+			clarifyBuf.WriteString(chunk.Content)
+			if idx := strings.Index(clarifyBuf.String(), "```"); idx >= 0 {
+				jsonStr := strings.TrimSpace(clarifyBuf.String()[:idx])
+				var data model.ClarificationData
+				if err := json.Unmarshal([]byte(jsonStr), &data); err == nil {
+					_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+						Event: "clarification",
+						Data:  data,
+					}, respChan)
+				}
+				inClarify = false
+				clarifyBuf.Reset()
+			}
+			continue
+		}
+
+		if currentSection == "" {
+			sectionBuf.WriteString(chunk.Content)
+			buf := sectionBuf.String()
+			if strings.HasPrefix(buf, "```chatdb-clarify") {
+				inClarify = true
+				clarifyBuf.WriteString(buf[len("```chatdb-clarify"):])
+				sectionBuf.Reset()
+				continue
+			}
+			for _, hdr := range sectionOrder {
+				if strings.Contains(buf, hdr) {
+					currentSection = sectionMap[hdr]
+					idx := strings.Index(buf, hdr)
+					prefix := strings.TrimSpace(buf[:idx])
+					if prefix != "" {
+						_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+							Event:   "message",
+							Role:    "assistant",
+							Content: prefix,
+						}, respChan)
+					}
+					after := buf[idx+len(hdr):]
+					sectionBuf.Reset()
+					sectionBuf.WriteString(after)
+					break
+				}
+			}
+			if currentSection == "" && sectionBuf.Len() > 60 {
+				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+					Event:   "message",
+					Role:    "assistant",
+					Content: sectionBuf.String(),
+				}, respChan)
+				sectionBuf.Reset()
+			}
+			continue
+		}
+
+		sectionBuf.WriteString(chunk.Content)
+		buf := sectionBuf.String()
+		switched := false
+		for _, hdr := range sectionOrder {
+			code, ok := sectionMap[hdr]
+			if !ok || code == currentSection {
+				continue
+			}
+			if strings.Contains(buf, hdr) {
+				flushSection()
+				idx := strings.Index(buf, hdr)
+				prefix := strings.TrimSpace(buf[:idx])
+				if prefix != "" {
+					_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+						Event:   currentSection,
+						Role:    "assistant",
+						Content: prefix,
+					}, respChan)
+				}
+				after := buf[idx+len(hdr):]
+				currentSection = code
+				sectionBuf.Reset()
+				sectionBuf.WriteString(after)
+				switched = true
+				break
+			}
+		}
+		if !switched && sectionBuf.Len() > 0 {
+			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+				Event:   currentSection,
+				Role:    "assistant",
+				Content: chunk.Content,
+			}, respChan)
+			sectionBuf.Reset()
+		}
 	}
 }
 
@@ -1118,11 +1292,40 @@ func appendQaMessage(ctx context.Context, userId int64, sessionId string, knowle
 
 func createQaCitations(ctx context.Context, userId int64, sessionId string, items []v1.RetrieveItem) ([]qaCitationEvent, error) {
 	citations := make([]qaCitationEvent, 0, len(items))
+	// collect unique document IDs
+	docIds := make(map[int64]struct{})
+	for _, item := range items {
+		docIds[item.DocumentId] = struct{}{}
+	}
+	// batch load effective_date and repealed_by
+	versionData := make(map[int64]struct {
+		EffectiveDate string
+		RepealedBy    string
+	})
+	if len(docIds) > 0 {
+		ids := make([]int64, 0, len(docIds))
+		for id := range docIds {
+			ids = append(ids, id)
+		}
+		records, _ := g.DB("master").Model("qa_document").Ctx(ctx).
+			Where("id", ids).
+			Fields("id,effective_date,repealed_by").All()
+		for _, r := range records {
+			versionData[r["id"].Int64()] = struct {
+				EffectiveDate string
+				RepealedBy    string
+			}{
+				EffectiveDate: r["effective_date"].String(),
+				RepealedBy:    r["repealed_by"].String(),
+			}
+		}
+	}
 	for index, item := range items {
 		citationId, err := appendQaCitation(ctx, userId, sessionId, item.DocumentId, item.SegmentId, item.Content)
 		if err != nil {
 			return nil, err
 		}
+		vd := versionData[item.DocumentId]
 		citations = append(citations, qaCitationEvent{
 			CitationId:     citationId,
 			Index:          index + 1,
@@ -1136,6 +1339,8 @@ func createQaCitations(ctx context.Context, userId int64, sessionId string, item
 			Score:          item.Score,
 			Content:        item.Content,
 			SourceProvider: "local",
+			EffectiveDate:  vd.EffectiveDate,
+			RepealedBy:     vd.RepealedBy,
 		})
 	}
 	return citations, nil
@@ -2174,4 +2379,27 @@ INDEX idx_task_id (task_id),
 INDEX idx_provider_type (provider, sync_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
+}
+
+
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
+}
+
+
+func filterSensitiveContent(s string) string {
+	sensitivePatterns := []string{
+		"token", "apiKey", "appSecret", "appKey", "password", "secret",
+	}
+	lower := strings.ToLower(s)
+	for _, p := range sensitivePatterns {
+		if strings.Contains(lower, p) {
+			return "[内容已过滤]"
+		}
+	}
+	return s
 }

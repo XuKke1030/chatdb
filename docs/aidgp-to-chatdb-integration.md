@@ -65,7 +65,46 @@ POST /openapi/chatdb/documents
 POST /openapi/chatdb/document-segments
 POST /openapi/chatdb/document-view
 POST /openapi/chatdb/knowledge-permissions
+POST /openapi/chatdb/document-relations
 ```
+
+### 2.3 文档字段对齐要求
+
+#### 2.3.1 文档类型 doc_type
+
+AIDGP 文档字段 `documentType` 需按以下枚举值推送，与 ChatDB 本地 `qa_knowledge_base.doc_type` 对齐：
+
+| 枚举值 | 含义 | 说明 |
+|---|---|---|
+| `policy` | 政策制度 | 政策、制度、规范类文档 |
+| `manual` | 业务手册 | 业务流程、操作手册类文档 |
+| `form` | 表单模板 | 常用表单、申请模板 |
+| `rule` | 规则标准 | 行业标准、技术规范 |
+| `case` | 案例汇编 | 典型案例、经验总结 |
+
+AIDGP 如有其他分类，需在推送前映射到上述 5 类；无法映射的归入 `policy`。
+
+#### 2.3.2 文档版本字段映射
+
+| AIDGP 字段 | ChatDB 本地字段 | 说明 |
+|---|---|---|
+| `version` | `title_group` | 同名文件不同版本共享同一 `title_group`，用于版本分组 |
+| `supersededBy` | `repealed_by` | 废止该文档的新版本标题或 ID |
+| `effectiveDate` | `effective_date` | 生效日期，格式 YYYY-MM-DD |
+| (无) | `repeal_date` | ChatDB 根据 `supersededBy` 关联查询自动填充 |
+
+要求：AIDGP 推送同一文件的不同版本时，`version` 字段保持一致（如文件主标题或编号），以便 ChatDB 按版本分组展示。
+
+#### 2.3.3 文档关联
+
+AIDGP 需提供文档间关联关系（引用、废止、补充等），通过 `document-relations` 接口返回。关联类型：
+
+| rel_type | 含义 | 说明 |
+|---|---|---|
+| `reference` | 引用 | 文档 A 引用了文档 B 的内容 |
+| `supplement` | 补充 | 文档 B 是文档 A 的补充说明 |
+| `repeal` | 废止 | 文档 A 废止了文档 B |
+| `related` | 相关 | 两文档主题相关，可供交叉参考 |
 
 ## 3. ChatDB 主动拉取流程
 
@@ -168,3 +207,10 @@ AIDGP 所有列表接口建议支持：
 - 支持分页或 cursor。
 - 同一请求参数重复调用应返回一致结果或等价结果。
 - 删除、废止、禁用数据必须能通过状态字段同步给 ChatDB。
+- 文档关联关系（引用、废止、补充等）必须能通过 `document-relations` 接口返回。
+
+### 5.1 分段附件要求
+
+AIDGP 文档分段字段需包含 `attachmentId` 和 `attachmentName`，用于标识该段落来源于哪个附件（如 PDF、Word、图片）。ChatDB 侧将在 `qa_document_segment` 表存储这两个字段，供前端展示附件来源和下载链接。
+
+若 AIDGP 已将附件内容解析后直接放入 segment `content`，则 `attachmentId`/`attachmentName` 可为空，ChatDB 仍能正常检索。

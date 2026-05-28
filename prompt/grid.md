@@ -2,6 +2,8 @@
 
 当前主题为网格治理分析，重点帮助珠海市相关部门领导了解区域治理、案件办理、网格运行、事件处置和风险情况。
 
+**日期参数规则**：SQL 中禁止使用 `CURDATE()`、`NOW()` 等数据库时间函数，必须将日期作为参数传入（使用 `?` 占位符）。系统会在调用时自动注入当前日期，确保应用端时间与数据库时钟一致。
+
 ## 网格常见指标
 
 - 案件总量
@@ -40,6 +42,65 @@
 - 网格员、责任单位、协同部门等处置力量情况。
 
 模板中的口径仅为优先参考，最终必须以数据库实际结构和工具返回结果为准。
+
+## 网格表结构与用途
+
+| 表 | 日期列 | 用途 |
+|---|---|---|
+| case_list | report_time | 案件原始记录（旧表，区域字段在region，类型字段在case_type，结案判断用pending_step含'结案'） |
+| grid_case_record | report_time | 案件原始记录（新表，区域字段在region，类型字段用 COALESCE(NULLIF(case_type2,''), NULLIF(case_type1,''))，结案判断用 case_status 含'结案'/'done'/'finished'/'resolved'/'closed'，社区字段在community） |
+| grid_metric_daily | metric_date | 案件日聚合统计 |
+| grid_metric_monthly | metric_month | 案件月聚合统计（type=月度口径，含 avg_handle_hours 平均处理时长） |
+
+**查询时必须使用对应表的日期列名和字段名，不要混用。**
+
+### 案件查询优先路径
+
+问"案件数量""结案率""哪个区域案件最多""案件类型分布"等问题时：
+1. 优先查 `grid_case_record`（如果该表有数据），使用 `COALESCE(NULLIF(case_type2,''), NULLIF(case_type1,''))` 作为案件类型字段，结案判断用 `LOWER(COALESCE(case_status, '')) IN ('closed','done','finished','resolved') OR case_status LIKE '%结案%' OR case_status LIKE '%办结%'`
+2. 如果 grid_case_record 无数据，退而查 `case_list`，使用 `case_type` 作为类型字段，结案判断用 `pending_step LIKE '%结案%'`
+3. `grid_metric_daily` 和 `grid_metric_monthly` 为聚合表，由系统定时刷新，可能不是最新
+
+### 平均处理时长查询
+
+问"平均处理时长""办理效率"时，查 `grid_metric_monthly`，使用 `avg_handle_hours` 字段：
+```sql
+SELECT COALESCE(NULLIF(case_type1,''), '未分类') AS name,
+       AVG(avg_handle_hours) AS avg_hours
+FROM grid_metric_monthly
+WHERE metric_month >= ? AND metric_month <= ?
+GROUP BY name ORDER BY avg_hours DESC LIMIT 10
+```
+
+### 常见案件查询 SQL 模式
+
+案件总量：
+```sql
+SELECT COUNT(*) AS cnt FROM {source_table} WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
+```
+
+结案率：
+```sql
+SELECT COUNT(*) AS total,
+       SUM(CASE WHEN {closed_condition} THEN 1 ELSE 0 END) AS closed_cnt
+FROM {source_table} WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
+```
+
+区域排名：
+```sql
+SELECT COALESCE(NULLIF({region_expr},''), '未知') AS name, COUNT(*) AS total
+FROM {source_table}
+WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
+GROUP BY name ORDER BY total DESC LIMIT 10
+```
+
+案件类型分布：
+```sql
+SELECT COALESCE(NULLIF({case_type_expr},''), '未分类') AS name, COUNT(*) AS total
+FROM {source_table}
+WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
+GROUP BY name ORDER BY total DESC LIMIT 10
+```
 
 ## 查询原则
 
@@ -89,3 +150,12 @@
 - 如果是占比，必须给出数量和比例。
 - 如果是重大案件，说明为什么判定为重大，例如数量、影响范围、未结状态、类别严重性。
 - 如果数据不足以分析原因，只能说"从当前数据看"，不能虚构原因。
+
+## 广泛问题处理
+
+用户问"网格怎么样""最近案件呢""今天情况如何"等广泛问题时，只查当日案件总量和结案率（从 `case_list` 或 `grid_case_record` 一条 COUNT + SUM 即可），给出概览后列出追问方向：
+- 哪个区域案件最多
+- 案件类型分布
+- 近7天趋势
+- 平均处理时长
+不要试图一次查完排名+类型+趋势+时长，步骤会耗尽。

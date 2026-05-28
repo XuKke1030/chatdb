@@ -10,7 +10,7 @@ AIDGP 作为被调用方提供：
 - 车流数据：明细、卡口设备、进出方向、港澳车、来源地、驻留时长。
 - 人流数据：进出人数、区域/网格维度、小时/日趋势、流动人口。
 - 网格数据：案件明细、结案率、区域排名、类别分布、重大案件。
-- 问答知识库：知识库列表、文档列表、正文分段、附件解析、版本状态、引用定位。
+- 问答知识库：知识库列表、文档列表、正文分段、附件解析、版本状态、引用定位、文档关联。
 
 ChatDB 作为调用方负责：
 
@@ -199,6 +199,7 @@ POST /openapi/chatdb/documents
 POST /openapi/chatdb/document-segments
 POST /openapi/chatdb/document-view
 POST /openapi/chatdb/knowledge-permissions
+POST /openapi/chatdb/document-relations
 ```
 
 知识库字段：
@@ -225,15 +226,25 @@ POST /openapi/chatdb/knowledge-permissions
   "title": "某管理办法",
   "fileName": "某管理办法.pdf",
   "fileType": "pdf",
-  "documentType": "阅件",
+  "documentType": "policy",
   "status": "active",
-  "version": "v3",
+  "version": "某管理办法",
   "effectiveDate": "2026-01-01",
   "supersededBy": "",
   "syncVersion": "202605180001",
   "updateTime": "2026-05-18 10:00:00"
 }
 ```
+
+字段映射：
+
+| AIDGP 字段 | ChatDB 本地字段 | 说明 |
+|---|---|---|
+| `documentType` | `doc_type` | 文档类型枚举：policy/manual/form/rule/case，需 AIDGP 按此映射推送 |
+| `version` | `title_group` | 同名文件不同版本共享同一值，用于版本分组 |
+| `supersededBy` | `repealed_by` | 废止该文档的新版本标题或 ID |
+| `effectiveDate` | `effective_date` | 生效日期，格式 YYYY-MM-DD |
+| (无) | `repeal_date` | ChatDB 根据 `supersededBy` 关联查询自动填充 |
 
 分段字段：
 
@@ -251,31 +262,155 @@ POST /openapi/chatdb/knowledge-permissions
 }
 ```
 
+附件字段说明：
+- `attachmentId`：该段落来源附件的外部 ID，为空表示段落来自文档正文
+- `attachmentName`：附件文件名，供前端展示附件来源
+
+ChatDB 侧将在 `qa_document_segment` 表新增 `attachment_id` 和 `attachment_name` 两列存储。若 AIDGP 已将附件解析内容放入 `content`，这两个字段可为空。
+
+文档关联接口：
+
+```http
+POST /openapi/chatdb/document-relations
+Authorization: Bearer {token}
+```
+
+请求：
+
+```json
+{
+  "requestId": "uuid",
+  "documentId": "",
+  "pageSize": 500,
+  "updatedAfter": "2026-05-18T00:00:00Z"
+}
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "list": [
+      {
+        "fromDocumentId": "doc-001",
+        "toDocumentId": "doc-002",
+        "relType": "reference",
+        "description": "某管理办法引用了某实施细则",
+        "enabled": true,
+        "updateTime": "2026-05-18 10:00:00"
+      }
+    ],
+    "pageSize": 500,
+    "total": 100,
+    "hasMore": true,
+    "nextCursor": "cursor-value"
+  }
+}
+```
+
+关联类型 `relType` 枚举：`reference`（引用）/ `supplement`（补充）/ `repeal`（废止）/ `related`（相关）。
+
 ## 8. 性能策略
 
 - 车流增量同步：每 1-5 分钟。
 - 人流同步：按 AIDGP 数据产出节奏，建议小时级或日级。
 - 网格同步：5-30 分钟或按批次。
 - 知识库同步：10-60 分钟或变更推送触发。
+- 文档+分段同步：30-60 分钟，增量 `updatedAfter`。
+- 文档关联同步：30-60 分钟，增量 `updatedAfter`。
 - 高频问数必须优先查询本地聚合表。
 - 实时查询 AIDGP 超时建议 3-8 秒。
 
-## 9. 开发任务
+## 9. 定时同步任务清单
+
+| 数据类型 | 默认频率 | 增量参数 | 说明 |
+|---|---|---|---|
+| 车流明细 | 30 分钟 | `updatedAfter` = 最近同步时间 | 高频，增量 |
+| 人流明细 | 30 分钟 | `updatedAfter` = 最近同步时间 | 高频，增量 |
+| 网格明细 | 30 分钟 | `updatedAfter` = 最近同步时间 | 高频，增量 |
+| 知识库列表 | 60 分钟 | `updatedAfter` = 最近同步时间 | 低频，增量 |
+| 文档列表+分段 | 60 分钟 | `updatedAfter` = 最近同步时间 | 低频，增量 |
+| 文档关联 | 60 分钟 | `updatedAfter` = 最近同步时间 | 低频，增量 |
+| 权限变更 | 手动触发 | `updatedAfter` = 最近同步时间 | 等对接 UIAP 后改为定时 |
+
+所有定时任务均传入最近一次成功同步时间作为 `updatedAfter` 参数，实现增量同步。首次同步时 `updatedAfter` 为空，拉取全量数据。
+
+## 10. 字段映射汇总
+
+| AIDGP 字段 | ChatDB 本地字段 | 本地表 | 说明 |
+|---|---|---|---|
+| `documentType` | `doc_type` | `qa_knowledge_base` | 5 类枚举：policy/manual/form/rule/case |
+| `version` | `title_group` | `qa_document` | 同名文件不同版本共享同一值 |
+| `supersededBy` | `repealed_by` | `qa_document` | 废止该文档的新版本标题或 ID |
+| `effectiveDate` | `effective_date` | `qa_document` | 生效日期，格式 YYYY-MM-DD |
+| (无) | `repeal_date` | `qa_document` | ChatDB 根据 `supersededBy` 关联查询自动填充 |
+| `attachmentId` | `attachment_id` | `qa_document_segment` | 段落来源附件 ID，为空表示正文 |
+| `attachmentName` | `attachment_name` | `qa_document_segment` | 附件文件名，供前端展示 |
+| `relType` | `rel_type` | `qa_document_relation` | 4 类枚举：reference/supplement/repeal/related |
+
+## 11. 同步日志查询
+
+ChatDB 管理端提供同步历史查询端点，方便运维排查：
+
+```http
+GET /admin/aidgp/sync-logs?syncType=documents&page=1&pageSize=20
+Authorization: Bearer {adminToken}
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "list": [
+      {
+        "id": 1,
+        "syncType": "documents",
+        "status": "success",
+        "successCount": 50,
+        "failureCount": 1,
+        "skippedCount": 3,
+        "startTime": 1716000000,
+        "endTime": 1716000060,
+        "message": ""
+      }
+    ],
+    "total": 100,
+    "page": 1,
+    "pageSize": 20
+  }
+}
+```
+
+## 12. 开发任务
 
 1. 实现 `provider=aidgp` 的真实 HTTP client。
 2. 实现 token 缓存、刷新、401 重试。
 3. 实现统一 `doJSON`、签名、分页、错误码映射。
 4. 新增车流、人流、网格聚合表。
 5. 实现三类业务数据同步任务。
-6. 实现知识库、文档、分段同步任务。
-7. 快路径查询改为优先查本地聚合表。
-8. 后台增加 AIDGP 连通性测试和同步日志。
+6. 实现知识库、文档、分段同步任务（含 `doc_type`/`title_group`/`repealed_by` 字段映射）。
+7. 实现文档关联同步任务（写入 `qa_document_relation`）。
+8. `qa_document_segment` 表新增 `attachment_id`/`attachment_name` 两列。
+9. 定时同步任务增加知识库+文档+关联同步，传入 `updatedAfter` 增量参数。
+10. 快路径查询改为优先查本地聚合表。
+11. 后台增加 AIDGP 连通性测试和同步日志。
+12. 新增同步日志查询端点 `GET /admin/aidgp/sync-logs`。
 
-## 10. 验收
+## 13. 验收
+
+## 13. 验收
 
 - AIDGP token 获取和刷新成功。
 - 车流、人流、网格同步成功。
-- 知识库、文档、分段同步成功。
+- 知识库、文档、分段同步成功（字段映射正确：doc_type/title_group/repealed_by）。
+- 文档关联同步成功（reference/supplement/repeal/related）。
+- 分段附件字段 attachment_id/attachment_name 正确存储。
+- 定时同步包含知识库+文档+关联，增量 updatedAfter 参数生效。
+- 同步日志查询端点可用。
 - 高频问数走本地聚合表。
 - AIDGP 不可用时返回最近同步数据或明确错误。
 - 日志不输出 token、appSecret、完整车牌、个人敏感信息。

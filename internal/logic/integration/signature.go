@@ -8,7 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
+
+	"github.com/gogf/gf/v2/os/gtime"
 )
 
 type SignedHeaders struct {
@@ -28,7 +29,7 @@ func NewSignedHeaders(method, pathWithQuery string, body []byte, secret string) 
 	if err != nil {
 		return SignedHeaders{}, err
 	}
-	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
+	timestamp := fmt.Sprintf("%d", gtime.Now().TimestampMilli())
 	bodyHash := Sha256Hex(body)
 	canonical := CanonicalString(method, pathWithQuery, timestamp, nonce, bodyHash)
 	signature := HmacSha256Base64(secret, canonical)

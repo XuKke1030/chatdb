@@ -282,7 +282,7 @@ func enabledTopics(items []model.TopicItem) []model.TopicItem {
 }
 
 func buildWelcomeMessage(user model.User) string {
-	hour := time.Now().Hour()
+	hour := gtime.Now().Hour()
 	var greeting string
 	switch {
 	case hour < 6:
@@ -338,7 +338,7 @@ func popularQuestionsForUser(ctx context.Context, userId int64, limit int) []v1.
 	}
 	records, err := g.DB("master").Model("admin_operation_log").Ctx(ctx).
 		Fields("content, COUNT(1) AS count").
-		Where("username = ? AND action_type = ? AND result = ? AND content <> ?", username, "闂瓟鏌ヨ", "success", "").
+		Where("username = ? AND action_type = ? AND result = ? AND content <> ?", username, "问答查询", "success", "").
 		Group("content").
 		OrderDesc("count").
 		Limit(limit).

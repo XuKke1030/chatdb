@@ -91,8 +91,8 @@ func (c *AskNumberCache) getCache() *gcache.Cache {
 
 // BuildCacheKey constructs a cache key from intent parameters.
 // Format: asknum:result:{topic}:{intent}:{databaseId}:{dateRangeHash}:{paramsHash}
-func BuildCacheKey(topic, intent string, databaseId int, params map[string]any) string {
-	dateRangeHash := intentDateRangeHash(intent)
+func BuildCacheKey(topic, intent string, databaseId int, days int, params map[string]any) string {
+	dateRangeHash := intentDateRangeHash(intent, days)
 	pHash := paramsHash(params)
 	return fmt.Sprintf("asknum:result:%s:%s:%d:%s:%s", topic, intent, databaseId, dateRangeHash, pHash)
 }
@@ -219,7 +219,7 @@ func (c *AskNumberCache) tryReconnect(parentCtx context.Context) {
 }
 
 // intentDateRangeHash returns a short deterministic string for the date range.
-func intentDateRangeHash(intent string) string {
+func intentDateRangeHash(intent string, days int) string {
 	now := gtime.Now()
 	today := now.Format("Ymd")
 	switch {
@@ -232,15 +232,24 @@ func intentDateRangeHash(intent string) string {
 		from := now.AddDate(0, 0, -13).Format("Ymd")
 		return from + "_" + today
 	case strings.Contains(intent, "trend"), strings.Contains(intent, "recent_days"):
-		from := now.AddDate(0, 0, -6).Format("Ymd")
+		if days <= 0 {
+			days = 7
+		}
+		from := now.AddDate(0, 0, -days+1).Format("Ymd")
 		return from + "_" + today
 	case strings.Contains(intent, "rank"):
-		from := now.AddDate(0, 0, -6).Format("Ymd")
+		if days <= 0 {
+			days = 7
+		}
+		from := now.AddDate(0, 0, -days+1).Format("Ymd")
 		return from + "_" + today
 	case strings.Contains(intent, "hourly"):
 		return today
 	case strings.Contains(intent, "dwell"):
-		from := now.AddDate(0, 0, -6).Format("Ymd")
+		if days <= 0 {
+			days = 7
+		}
+		from := now.AddDate(0, 0, -days+1).Format("Ymd")
 		return from + "_" + today
 	default:
 		return today

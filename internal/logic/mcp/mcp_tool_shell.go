@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -40,13 +41,26 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 		return
 	}
 
-	// 为了避免交互，使用非交互 shell，并由我们禁用危险操作符
+	// 校验 cwd
+	if cwd != "" {
+		if err = validateCwd(cwd); err != nil {
+			out = mcp.NewToolResultText(err.Error())
+			err = nil
+			return
+		}
+	}
+
 	ctxTimeout, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	// 使用 /bin/zsh -lc 或 /bin/sh -lc 均可；macOS 默认有 zsh
-	// 我们已在 validateSafeCommand 中禁止了管道与重定向等操作符
-	cmd := exec.CommandContext(ctxTimeout, "/bin/zsh", "-lc", command)
+	// 不使用登录 shell（去掉 -l），避免 source 用户配置文件导致绕过
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.CommandContext(ctxTimeout, "cmd", "/c", command)
+	default:
+		cmd = exec.CommandContext(ctxTimeout, "/bin/sh", "-c", command)
+	}
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -65,7 +79,6 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 	// 退出码
 	exitCode := 0
 	if runErr != nil {
-		// 提取退出码（在大多数情况下）
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
@@ -88,7 +101,6 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 		"command":          command,
 	}
 
-	// 对于非零退出码，仍返回结果文本，而不是返回错误
 	out = mcp.NewToolResultText(gjson.MustEncodeString(result))
 	return
 }
@@ -110,7 +122,6 @@ func validateSafeCommand(command string) error {
 	// 允许使用 |，对每个分段分别做首 token 校验
 	segments := strings.Split(normalized, "|")
 	if len(segments) > 1 {
-		// 最多允许 3 个管道（4 个分段）
 		if len(segments)-1 > 3 {
 			return errors.New("管道分段过多：最多允许 3 个管道")
 		}
@@ -129,13 +140,16 @@ func validateSafeCommand(command string) error {
 		}
 	}
 
-	// 禁用高危命令片段
+	// 禁用高危命令片段（含 shell 元编程/逃逸手段）
 	bannedFragments := []string{
 		"rm -rf", ":(){:|:&};:", "mkfs.", "/dev/", "/etc/passwd",
+		"eval ", "exec ", "source ", ". ",
+		"export ", "alias ", "function ", "typeset ", "declare ",
+		"bash -i", "sh -i", "nc -", "ncat ", "/dev/tcp", "/dev/udp",
 	}
 	for _, frag := range bannedFragments {
 		if strings.Contains(normalized, frag) {
-			return errors.New("命令包含危险片段: " + frag)
+			return errors.New("命令包含危险片段: " + strings.TrimSpace(frag))
 		}
 	}
 
@@ -145,17 +159,52 @@ func validateSafeCommand(command string) error {
 func validateFirstToken(cmd string) error {
 	// 禁用高危命令（匹配首 token）
 	bannedCommands := []string{
-		"rm", "rmdir", "mkfs", "dd", "chmod", "chown", "mv", "shutdown", "reboot",
-		"halt", "poweroff", "init", "service", "systemctl", "mount", "umount", "kill",
-		"pkill", "killall", "crontab", "useradd", "userdel", "usermod", "groupadd",
-		"groupdel", "visudo", "sudo", "su",
+		// 文件系统破坏
+		"rm", "rmdir", "mkfs", "dd", "chmod", "chown", "mv",
+		// 系统控制
+		"shutdown", "reboot", "halt", "poweroff", "init", "service", "systemctl",
+		"mount", "umount",
+		// 进程管理
+		"kill", "pkill", "killall",
+		// 定时任务
+		"crontab", "at", "batch",
+		// 用户/权限管理
+		"useradd", "userdel", "usermod", "groupadd", "groupdel", "visudo", "sudo", "su",
+		// Shell 元编程/逃逸
+		"eval", "exec", "source", "export", "alias", "unalias",
+		"function", "typeset", "declare", "unset",
+		"bash", "sh", "zsh", "csh", "tcsh", "fish", "dash", "ksh",
+		// 网络工具（常用于反弹 shell）
+		"nc", "ncat", "socat", "telnet",
+		// 包管理（避免安装任意软件）
+		"apt", "yum", "dnf", "pip", "npm", "gem", "cargo",
 	}
 
-	// 仅检查首 token，避免误杀比如 "echo rm"
 	firstToken := firstTokenOf(cmd)
 	for _, b := range bannedCommands {
 		if firstToken == b {
 			return errors.New("命令被禁用: " + b)
+		}
+	}
+	return nil
+}
+
+// validateCwd 校验工作目录，只允许在白名单目录下执行
+func validateCwd(cwd string) error {
+	// 禁止路径穿越
+	if strings.Contains(cwd, "..") {
+		return errors.New("工作目录不允许包含 .. 路径穿越")
+	}
+	// 禁止敏感系统目录
+	bannedPrefixes := []string{
+		"/etc", "/root", "/boot", "/sys", "/proc", "/dev",
+		"C:\\Windows\\System32", "C:\\Windows\\SysWOW64",
+	}
+	normalized := strings.ReplaceAll(strings.ToLower(cwd), "\\", "/")
+	for _, prefix := range bannedPrefixes {
+		p := strings.ReplaceAll(strings.ToLower(prefix), "\\", "/")
+		if strings.HasPrefix(normalized, p) {
+			return errors.New("工作目录不允许在系统敏感目录下: " + cwd)
 		}
 	}
 	return nil
