@@ -90,7 +90,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	aiAgent, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: llm,
 		ToolsConfig:      compose.ToolsNodeConfig{Tools: mcpTools},
-		MaxStep:          25,
+		MaxStep:          35,
 		// 自定义 StreamToolCallChecker：DeepSeek 等模型会先输出文本再输出 tool calls
 		// 默认实现只检查第一个 chunk，会导致 tool calls 被忽略
 		StreamToolCallChecker: func(ctx context.Context, sr *schema.StreamReader[*schema.Message]) (bool, error) {
@@ -184,6 +184,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 
 	out, err := aiAgent.Stream(timeoutCtx, messages)
 	if err != nil {
+		consts.Logger.Errorf(ctx, "aiAgent.Stream error: %v", err)
 		cancel()
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{

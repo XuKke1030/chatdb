@@ -73,6 +73,22 @@
 - 如果已有日汇总或小时汇总数据，优先使用汇总数据。
 - 回答必须说明统计周期和进出维度，避免把进入人数、离开人数、总人流量混为一类。
 
+### 对比查询必须查两个时间段
+
+用户问"与前一天相比""跟昨天比""环比变化""日环比"等对比类问题时：
+- **必须分别查询两个时间点的数据**，然后再做差值/比率计算。
+- 例如"跟前一天相比"，必须同时查今天和前一天两天的数据，不能用一天的数据推断变化。
+- 使用一条SQL同时查两天：`WHERE day IN (?, ?) GROUP BY day`，或分两次查。两天的日期通过 NowTime 工具获取。
+
+### 标签表 type 字段使用规则
+
+`population_tag_daily` 的 `type` 字段含义：
+- **type = 1**：总人数（默认）。**绝大多数查询都用 type=1**，包括"人流量""人流多少""占比""排名"等。
+- **type = 2**：进入人数。**仅当用户明确说"进入""进站"时使用**。
+- **type = 3**：离开人数。**仅当用户明确说"离开""出站"时使用**。
+- **禁止使用 `type IN (2,3)` 或 `type != 1` 来获取"进入+离开"数据**——type=1 已经是总人数，不是"只计一类"。
+- 如果需要同时看进入和离开，应分别用 type=2 和 type=3 各查一次，或从 `population_metric_daily` 表查 `in_count`/`out_count` 字段。
+
 ## 常见问题处理
 
 ### 近几日人流趋势
@@ -138,13 +154,13 @@
 | 中年 | 30-50 |
 | 老年/老人 | 50-70, 70+ |
 
-### type 含义
+### type 含义（详见"标签表 type 字段使用规则"）
 
-| type | 含义 | 查询条件 |
+| type | 含义 | 使用场景 |
 |---|---|---|
-| 1 | 总人数 | 默认值，用户未指定进出方向时使用 |
-| 2 | 进站/进入 | 用户明确说"进站""进入"时使用 |
-| 3 | 出站/离开 | 用户明确说"出站""离开"时使用 |
+| 1 | 总人数 | 默认，绝大多数查询 |
+| 2 | 进入 | 仅用户明确说"进入" |
+| 3 | 离开 | 仅用户明确说"离开" |
 
 ### 常见标签查询 SQL 模式
 
@@ -172,25 +188,6 @@ WHERE day >= DATE(?) AND day <= DATE(?) AND tag = ? AND type = ?
 GROUP BY label ORDER BY cnt DESC LIMIT ?
 ```
 
-### 快问覆盖说明
-
-以下问题已由快问路径直接回答，LLM 不需要额外处理：
-- 年龄/性别/来源地占比分布 → `population.tag.distribution`
-- 年龄段/来源地排名 TopN → `population.tag.topn`
-- 标签趋势（如"年轻人进站趋势"）→ `population.tag.trend`
-- 活力指数单值 → `population.activation.summary`
-- 活力趋势（活力+基线双线）→ `population.activation.trend`
-- 人流画像（综合）→ `population.portrait`
-- 近七天进出趋势 → `population.trend.recent_days`
-- 区域排名 → `population.rank.region`
-- 按小时分布 → `population.trend.hourly`
-- 节假日对比 → `population.compare.holiday`
-- 同比 → `population.compare.yoy`
-- 多区域对比 → `population.compare.multi_region`
-- 流动人口异常 → `population.floating.anomaly`
-- 人流综合 → `population.overview`
-
-如果快问未命中（如用户问"30-40岁占比"），LLM 应按上述 SQL 模式查 `population_tag_daily` 回答。
 
 ## 图表要求
 

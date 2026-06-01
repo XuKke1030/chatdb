@@ -72,8 +72,8 @@ func (s *sMcpTool) ExecSql(ctx context.Context, request mcp.CallToolRequest) (ou
 
 	respStr, convErr := utility.ConvertAnyToMarkdownTable(rows)
 	if convErr != nil {
-		err = convErr
-		return
+		// 空结果是正常业务场景，不作为错误抛出
+		respStr = "暂无数据"
 	}
 
 	// 审计日志

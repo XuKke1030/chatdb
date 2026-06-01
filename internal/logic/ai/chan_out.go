@@ -110,7 +110,7 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, strea
 						if buffer.Len() > 0 {
 							_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 								Event:   "message",
-								Content: buffer.String(),
+								Content: utility.SanitizeOutput(buffer.String()),
 								Role:    "assistant",
 							}, respChan)
 						}
@@ -146,7 +146,7 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, strea
 						state = stateNormal
 						_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 							Event:   "message",
-							Content: buf,
+							Content: utility.SanitizeOutput(buf),
 							Role:    gconv.String(res.chunk.Role),
 						}, respChan)
 						buffer.Reset()
@@ -155,7 +155,7 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, strea
 				case stateNormal:
 					_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 						Event:   "message",
-						Content: content,
+						Content: utility.SanitizeOutput(content),
 						Role:    gconv.String(res.chunk.Role),
 					}, respChan)
 

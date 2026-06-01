@@ -17,6 +17,30 @@
 - 平均案件量
 - 办理效率/处理时长
 
+## 案件分类口径
+
+当用户提及"事件类""部件类"时，按以下口径分类：
+
+**事件类**（一级类别归属）：
+- 环境卫生（含垃圾清运、污水排放、户外广告等）
+- 市容市貌（含乱摆卖、占道经营等）
+- 市场监管（含无证经营、食品安全等）
+- 社区服务（含公共设施、邻里纠纷等）
+
+**部件类**（一级类别归属）：
+- 城市管理（含市政设施、违法建设等）
+
+分类判断规则：按 `case_type` 字段中"/"分隔的第一级（一级类别）归类，不要按二级类别关键词归类。
+
+示例：
+- "社区服务/公共设施" → 一级类别=社区服务 → 事件类
+- "城市管理/市政设施" → 一级类别=城市管理 → 部件类
+- "城市管理/违法建设" → 一级类别=城市管理 → 部件类
+
+错误示范（禁止）：
+- 含"设施"关键字就归为部件类 ——"社区服务/公共设施"属事件类
+- 含"违法"关键字就归为部件类 ——"社区服务/邻里纠纷"属事件类
+
 ## 典型问法支持
 
 1. 单指标问数：某月某社区案件数量、结案率。
@@ -72,6 +96,24 @@ WHERE metric_month >= ? AND metric_month <= ?
 GROUP BY name ORDER BY avg_hours DESC LIMIT 10
 ```
 
+### 社区名称提取规则（重要）
+
+`case_list` 的 `region` 字段存储的是完整行政路径，格式为"市/区/镇(街道)/社区居委会"，例如：
+- `珠海市/高新区/唐家湾镇/唐家社区居委会`
+- `珠海市/香洲区/拱北街道/粤华社区居委会`
+
+**查询社区维度数据时，必须提取社区简称，不要用完整路径做 GROUP BY**。
+
+提取SQL：
+```sql
+SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) AS community
+```
+
+**防幻觉硬性规则：**
+- 回答中的社区名必须来自本次查询结果，禁止凭训练数据常识编造数据库中不存在的社区名。
+- 如果用户问"哪个社区案件最多"，必须先查库拿到社区排名，再基于查询结果回答，不得跳过查库步骤。
+- 如果不确定数据库中有哪些社区，先用 `SELECT DISTINCT SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) FROM case_list LIMIT 20` 查一次，再基于结果回答。
+
 ### 常见案件查询 SQL 模式
 
 案件总量：
@@ -86,12 +128,12 @@ SELECT COUNT(*) AS total,
 FROM {source_table} WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
 ```
 
-区域排名：
+区域/社区排名：
 ```sql
-SELECT COALESCE(NULLIF({region_expr},''), '未知') AS name, COUNT(*) AS total
+SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) AS community, COUNT(*) AS total
 FROM {source_table}
 WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
-GROUP BY name ORDER BY total DESC LIMIT 10
+GROUP BY community ORDER BY total DESC LIMIT 10
 ```
 
 案件类型分布：
@@ -102,12 +144,91 @@ WHERE report_time >= ? AND report_time < DATE_ADD(?, INTERVAL 1 DAY)
 GROUP BY name ORDER BY total DESC LIMIT 10
 ```
 
+## 查询示例（直接写SQL，无需先探查表结构）
+
+以下示例展示了如何根据用户问题直接编写 SQL，**不需要先执行 DESCRIBE/SHOW COLUMNS/SHOW TABLES**，直接使用上方的表结构信息即可。
+
+**问"4月上报案件社区排名前三"：**
+```sql
+SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) AS community, COUNT(*) AS total
+FROM case_list
+WHERE report_time >= '2026-04-01' AND report_time < '2026-05-01'
+GROUP BY community ORDER BY total DESC LIMIT 3
+```
+
+**问"5月案件来源占比"：**
+```sql
+SELECT COALESCE(NULLIF(case_source,''), '未知') AS name, COUNT(*) AS total
+FROM case_list
+WHERE report_time >= '2026-05-01' AND report_time < '2026-06-01'
+GROUP BY name ORDER BY total DESC
+```
+
+**问"各社区4月上报量对比"：**
+```sql
+SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) AS community, COUNT(*) AS total
+FROM case_list
+WHERE report_time >= '2026-04-01' AND report_time < '2026-05-01'
+GROUP BY community ORDER BY total DESC LIMIT 10
+```
+
+**问"案件积压主要在哪些环节"：**
+```sql
+SELECT COALESCE(NULLIF(pending_step,''), '未知') AS name, COUNT(*) AS total
+FROM case_list
+WHERE pending_step NOT LIKE '%结案%'
+GROUP BY name ORDER BY total DESC
+```
+
+**问"对比不同案件来源在各环节的时效"：**
+先查积压分布：
+```sql
+SELECT COALESCE(NULLIF(pending_step,''), '未知') AS step,
+       COALESCE(NULLIF(case_source,''), '未知') AS source,
+       COUNT(*) AS cnt,
+       AVG(TIMESTAMPDIFF(HOUR, report_time, update_time)) AS avg_hours
+FROM case_list
+WHERE pending_step NOT LIKE '%结案%'
+GROUP BY step, source ORDER BY step, cnt DESC
+```
+再查结案时效：
+```sql
+SELECT COALESCE(NULLIF(case_source,''), '未知') AS source,
+       COUNT(*) AS total,
+       AVG(TIMESTAMPDIFF(HOUR, report_time, update_time)) AS avg_hours
+FROM case_list
+WHERE pending_step LIKE '%结案%'
+GROUP BY source ORDER BY avg_hours DESC
+```
+
+**问"社区案件量TOP3及其主要案件类型"：**
+第一步查TOP3社区：
+```sql
+SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) AS community, COUNT(*) AS total
+FROM case_list
+WHERE report_time >= '2026-03-01' AND report_time < '2026-06-01'
+GROUP BY community ORDER BY total DESC LIMIT 3
+```
+第二步用结果查各社区案件类型：
+```sql
+SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(region, '/', -1), '社区', 1) AS community,
+       COALESCE(NULLIF(case_type,''), '未分类') AS case_type, COUNT(*) AS total
+FROM case_list
+WHERE report_time >= '2026-03-01' AND report_time < '2026-06-01'
+AND (region LIKE '%唐家社区%' OR region LIKE '%粤华社区%' OR region LIKE '%紫荆社区%')
+GROUP BY community, case_type ORDER BY community, total DESC
+```
+**总共只需 2-3 步即可完成，不需要先探查表结构。**
+
 ## 查询原则
 
-- 问案件、结案率、区域排名、重大案件、处置难度时，必须先查库确认实际表结构和可用字段。
+- 问案件、结案率、区域排名、重大案件、处置难度时，**优先使用本文件中已列出的表结构和字段名直接编写 SQL**，不要重复执行 DESCRIBE 或 SHOW COLUMNS，避免浪费步骤。
+- 只有当本文件的表结构无法覆盖用户问题时，才执行 DESCRIBE 探查。
 - 如果数据库已有影响分、难度分、综合分等业务指标，优先使用已有指标。
 - 如果没有现成指标，可以根据已查到的业务字段进行综合判断，但必须说明判断依据来自哪些业务信息，不得编造字段或数值。
 - 不要把内部 id 作为主要答案，优先展示案件名称、区域名称、网格名称、责任单位等可读信息。
+- **回答中绝对禁止出现数据库表名和字段名**，只使用业务化表述，如"案件记录""上报时间""当前环节""案件来源"等。
+- **回答中绝对禁止出现数据库表名（如 case_list、grid_case_record）和字段名（如 report_time、update_time、pending_step、case_status），只使用业务化表述，如"案件记录""上报时间""更新时间""当前环节""处置状态"。**
 
 ## 常见问题处理
 
@@ -116,6 +237,7 @@ GROUP BY name ORDER BY total DESC LIMIT 10
 - 按用户指定周期统计；未指定周期时，可优先使用本月或最近可用周期，并在回答中说明。
 - 多区域、多网格、多类型对比时，应输出 `## 可视化`，使用统一 `chatdb-chart`。
 - 单一结案率、单一案件数量等问题，不输出可视化。
+- **排名类问题必须同时输出精准结论、特征洞察、洞察分析和可视化四段，不能只输出图表或只输出文字。**
 
 ### 重大案件、影响最大案件、处置难度最大案件
 
