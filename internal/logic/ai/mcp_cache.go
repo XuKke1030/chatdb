@@ -34,6 +34,11 @@ func (t *cachedMCPTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (t *cachedMCPTool) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...einoTool.Option) (string, error) {
+	// Validate arguments JSON before passing to MCP client
+	if !json.Valid([]byte(argumentsInJSON)) {
+		consts.Logger.Errorf(ctx, "MCP tool %s received invalid JSON arguments: %q", t.info.Name, argumentsInJSON)
+		return "", fmt.Errorf("invalid JSON arguments for tool %s: %s", t.info.Name, argumentsInJSON)
+	}
 	result, err := consts.McpClient.CallTool(ctx, gMcp.CallToolRequest{
 		Request: gMcp.Request{
 			Method: "tools/call",

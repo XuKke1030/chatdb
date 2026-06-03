@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,6 +186,104 @@ func TestEmitClarification_TrailingText(t *testing.T) {
 	}
 	if items[1].Content != "请选择后继续。" {
 		t.Fatalf("unexpected trailing content: %s", items[1].Content)
+	}
+}
+
+func TestStreamState_SkippingReasoning(t *testing.T) {
+	messages := []*schema.Message{
+		{Role: schema.Assistant, Content: "好的，让我先查一下数据。\n\n"},
+		{Role: schema.Assistant, Content: "从之前的查询来看，数据如下：\n\n"},
+		{Role: schema.Assistant, Content: "## 精准结论\n5月24日各卡口共过车"},
+		{Role: schema.Assistant, Content: "18辆。"},
+	}
+	stream := schema.StreamReaderFromArray(messages)
+
+	s := &sAiChat{}
+	respChan := make(chan any, 20)
+	closer := newChanCloser(respChan)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s.AiChatStreamOut(ctx, closer, stream, cancel)
+
+	items := collectSSE(respChan, 3*time.Second)
+	var fullContent string
+	for _, item := range items {
+		if item.Event == "message" {
+			fullContent += item.Content
+		}
+	}
+	if strings.Contains(fullContent, "让我先查") {
+		t.Fatal("reasoning text should be filtered out")
+	}
+	if !strings.Contains(fullContent, "## 精准结论") {
+		t.Fatal("formal answer structure should be preserved")
+	}
+	if !strings.Contains(fullContent, "18辆") {
+		t.Fatal("answer data should be preserved")
+	}
+}
+
+func TestStreamState_NoReasoning(t *testing.T) {
+	messages := []*schema.Message{
+		{Role: schema.Assistant, Content: "## 精准结论\n今天车流量为1200辆。"},
+		{Role: schema.Assistant, Content: "## 特征洞察\n数据来源为卡口统计。"},
+	}
+	stream := schema.StreamReaderFromArray(messages)
+
+	s := &sAiChat{}
+	respChan := make(chan any, 20)
+	closer := newChanCloser(respChan)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s.AiChatStreamOut(ctx, closer, stream, cancel)
+
+	items := collectSSE(respChan, 3*time.Second)
+	var fullContent string
+	for _, item := range items {
+		if item.Event == "message" {
+			fullContent += item.Content
+		}
+	}
+	if !strings.Contains(fullContent, "## 精准结论") {
+		t.Fatal("formal answer should be preserved when no reasoning prefix")
+	}
+}
+
+func TestIsAnswerStart(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"好的，让我查一下\n## 精准结论", true},
+		{"## 特征洞察", true},
+		{"## 洞察分析", true},
+		{"## 可视化", true},
+		{"让我先分析一下", false},
+		{"好的，用户需要", false},
+		{"从之前的对话", false},
+	}
+	for _, tt := range tests {
+		if got := isAnswerStart(tt.input); got != tt.want {
+			t.Errorf("isAnswerStart(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExtractFromMarker(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"好的\n## 精准结论\n数据", "## 精准结论\n数据"},
+		{"## 特征洞察\n口径", "## 特征洞察\n口径"},
+		{"没有标记的文本", "没有标记的文本"},
+	}
+	for _, tt := range tests {
+		if got := extractFromMarker(tt.input); got != tt.want {
+			t.Errorf("extractFromMarker(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

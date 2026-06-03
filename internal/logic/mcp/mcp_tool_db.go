@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gogf/gf/v2/database/gdb"
@@ -78,6 +80,11 @@ func (s *sMcpTool) ExecSql(ctx context.Context, request mcp.CallToolRequest) (ou
 
 	// 审计日志
 	consts.Logger.Infof(ctx, "sql_audit sql=%s durationMs=%d rowCount=%d", sql, queryMs, rowCount)
+
+	// 记录查询表名到context（供SSE推送数据来源）
+	for _, t := range extractTableNames(sql) {
+		addTableToContext(ctx, t)
+	}
 
 	// 在返回结果中包含执行的 SQL 语句信息
 	fullResult := fmt.Sprintf("**执行的 SQL：**\n\n```sql\n%s\n```\n\n**执行结果：**\n\n%s", sql, respStr)
@@ -355,4 +362,128 @@ func isReadOnlySQL(sql string) bool {
 
 	// 其他情况都认为是非只读操作
 	return false
+}
+
+// ExtractTableNames 从MCP工具返回文本中提取表名（公开给AI侧使用）
+func ExtractTableNames(text string) []string {
+	return extractTableNames(text)
+}
+
+// AddTable 向累加器添加表名（去重）
+func AddTable(tables *[]string, table string) {
+	if tables == nil {
+		return
+	}
+	for _, t := range *tables {
+		if t == table {
+			return
+		}
+	}
+	*tables = append(*tables, table)
+}
+
+type ctxKeyTables struct{}
+
+// sessionTables 用 sessionID 做 key，避免 eino 内部 context 派生丢值
+var sessionTables sync.Map // map[string]*[]string
+
+func WithTablesAccumulator(ctx context.Context) (context.Context, *[]string) {
+	sid := sessionIdFromCtx(ctx)
+	tables := make([]string, 0)
+	ptr := &tables
+	sessionTables.Store(sid, ptr)
+	return context.WithValue(ctx, ctxKeyTables{}, sid), ptr
+}
+
+func TablesFromContext(ctx context.Context) *[]string {
+	if v, ok := ctx.Value(ctxKeyTables{}).(string); ok {
+		if ptr, ok := sessionTables.Load(v); ok {
+			return ptr.(*[]string)
+		}
+	}
+	return nil
+}
+
+func addTableToContext(ctx context.Context, table string) {
+	consts.Logger.Infof(ctx, "perf addTable table=%s sidFromCtx=%v", table, ctx.Value("sessionId"))
+	if v := TablesFromContext(ctx); v != nil {
+		for _, t := range *v {
+			if t == table {
+				return
+			}
+		}
+		*v = append(*v, table)
+		consts.Logger.Infof(ctx, "perf addTable added table=%s total=%d", table, len(*v))
+	} else {
+		consts.Logger.Infof(ctx, "perf addTable FAILED no accumulator for table=%s", table)
+	}
+}
+
+func sessionIdFromCtx(ctx context.Context) string {
+	if v := ctx.Value("sessionId"); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return "unknown"
+}
+
+// extractTableNames 从SQL语句中提取表名
+func extractTableNames(sql string) []string {
+	upper := strings.ToUpper(sql)
+	tables := make(map[string]bool)
+
+	// FROM table
+	fromRe := regexp.MustCompile(`(?i)\bFROM\s+` + "`" + `?(\w+)` + "`" + `?`)
+	for _, m := range fromRe.FindAllStringSubmatch(sql, -1) {
+		name := m[1]
+		if !isSQLKeyword(strings.ToUpper(name)) {
+			tables[name] = true
+		}
+	}
+
+	// JOIN table
+	joinRe := regexp.MustCompile(`(?i)\bJOIN\s+` + "`" + `?(\w+)` + "`" + `?`)
+	for _, m := range joinRe.FindAllStringSubmatch(sql, -1) {
+		name := m[1]
+		if !isSQLKeyword(strings.ToUpper(name)) {
+			tables[name] = true
+		}
+	}
+
+	// 如果正则没匹配到，尝试简单解析
+	if len(tables) == 0 && strings.Contains(upper, "FROM") {
+		parts := strings.Fields(upper)
+		for i, p := range parts {
+			if p == "FROM" && i+1 < len(parts) {
+				raw := strings.Trim(strings.Fields(sql)[i+1], "`;,")
+				if !isSQLKeyword(strings.ToUpper(raw)) {
+					tables[raw] = true
+				}
+			}
+		}
+	}
+
+	result := make([]string, 0, len(tables))
+	for t := range tables {
+		result = append(result, t)
+	}
+	return result
+}
+
+func isSQLKeyword(s string) bool {
+	keywords := map[string]bool{
+		"SELECT": true, "WHERE": true, "AND": true, "OR": true,
+		"GROUP": true, "ORDER": true, "HAVING": true, "LIMIT": true,
+		"JOIN": true, "ON": true, "SET": true, "INTO": true,
+		"VALUES": true, "AS": true, "NOT": true, "NULL": true,
+		"LEFT": true, "RIGHT": true, "INNER": true, "OUTER": true,
+		"CROSS": true, "UNION": true, "INSERT": true, "UPDATE": true,
+		"DELETE": true, "CREATE": true, "ALTER": true, "DROP": true,
+		"INDEX": true, "TABLE": true, "FROM": true, "BETWEEN": true,
+		"IN": true, "LIKE": true, "EXISTS": true, "CASE": true,
+		"WHEN": true, "THEN": true, "ELSE": true, "END": true,
+		"DUAL": true,
+	}
+	return keywords[s]
 }

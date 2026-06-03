@@ -141,6 +141,7 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	var jsonData []byte
 	var assistantBuilder strings.Builder
 	var isClarification bool
+	var collectedTables string
 	firstTokenLogged := false
 	for {
 		select {
@@ -174,8 +175,15 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 					if out.Event == "clarification" {
 						isClarification = true
 					}
+					if out.Event == "tables" && out.Content != "" {
+						collectedTables = out.Content
+					}
 					if out.Event == "end" && assistantBuilder.Len() > 0 && !isClarification {
-						if saveErr := appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", utility.SanitizeOutput(assistantBuilder.String())); saveErr != nil {
+						saveContent := utility.SanitizeOutput(assistantBuilder.String())
+						if collectedTables != "" {
+							saveContent += "\n<!-- tables:" + collectedTables + " -->"
+						}
+						if saveErr := appendAskNumberMessage(ctx, userId, sessionId, req.Topic, "assistant", saveContent); saveErr != nil {
 							consts.Logger.Errorf(ctx, "保存问数会话回复失败: %s", saveErr.Error())
 						}
 					}

@@ -240,7 +240,7 @@ BEGIN
       END CASE;
       SET area_base = FLOOR(260000 * area_w * f * mf);
 
-      -- 年龄 type=1, 5个label覆盖全年龄段
+      -- 年龄 type=1(总人数), 5个label覆盖全年龄段
       SET cnt = FLOOR(area_base * 0.08 * (1+RAND()*0.2-0.1));
       INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','0-18',1,d,NOW(3));
       SET cnt = FLOOR(area_base * 0.18 * (1+RAND()*0.2-0.1));
@@ -252,7 +252,31 @@ BEGIN
       SET cnt = FLOOR(area_base * 0.08 * (1+RAND()*0.2-0.1));
       INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','70+',1,d,NOW(3));
 
-      -- 性别 type=1, 2个label
+      -- 年龄 type=2(进入人数), 进出比约51%, 5个label
+      SET cnt = FLOOR(area_base * 0.51 * 0.08 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','0-18',2,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.51 * 0.18 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','18-30',2,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.51 * 0.30 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','30-50',2,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.51 * 0.22 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','50-70',2,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.51 * 0.08 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','70+',2,d,NOW(3));
+
+      -- 年龄 type=3(离开人数), 进出比约49%, 5个label
+      SET cnt = FLOOR(area_base * 0.49 * 0.08 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','0-18',3,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.49 * 0.18 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','18-30',3,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.49 * 0.30 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','30-50',3,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.49 * 0.22 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','50-70',3,d,NOW(3));
+      SET cnt = FLOOR(area_base * 0.49 * 0.08 * (1+RAND()*0.2-0.1));
+      INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'年龄','70+',3,d,NOW(3));
+
+      -- 性别 type=1(总人数), 2个label
       SET cnt = FLOOR(area_base * 0.52 * (1+RAND()*0.2-0.1));
       INSERT INTO mobile_day_flow_tag (area,label_cnt,tag,label,type,day,create_time) VALUES (area_name,cnt,'性别','男',1,d,NOW(3));
       SET cnt = FLOOR(area_base * 0.48 * (1+RAND()*0.2-0.1));
