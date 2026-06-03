@@ -177,8 +177,22 @@ GROUP BY community ORDER BY total DESC LIMIT 10
 SELECT COALESCE(NULLIF(pending_step,''), '未知') AS name, COUNT(*) AS total
 FROM case_list
 WHERE pending_step NOT LIKE '%结案%'
+  AND report_time BETWEEN ? AND ?
 GROUP BY name ORDER BY total DESC
 ```
+
+**问"积压案件平均已耗时"：**
+```sql
+SELECT COALESCE(NULLIF(pending_step,''), '未知') AS step,
+       COUNT(*) AS cnt,
+       AVG(TIMESTAMPDIFF(HOUR, report_time, ?)) AS avg_hours
+FROM case_list
+WHERE pending_step NOT LIKE '%结案%'
+  AND report_time BETWEEN ? AND ?
+GROUP BY step ORDER BY cnt DESC
+```
+
+**重要口径**：用户问"某月未结案"或"某月积压"时，**必须加 `report_time BETWEEN` 过滤**，限定为该月上报的案件。不加时间过滤会跨月统计所有未结案件，导致数据翻倍。
 
 **问"对比不同案件来源在各环节的时效"：**
 先查积压分布：
@@ -245,6 +259,12 @@ GROUP BY community, case_type ORDER BY community, total DESC
 - 判断依据优先参考影响范围、涉及人数、投诉量、风险等级、事件等级、持续时长、处置耗时、转派次数、协同部门数、未结案状态等。
 - 回答必须说明该结果是按影响或处置难度相关口径排序后得到。
 - 如果数据不足以分析原因，只能说"从当前数据看"，不能虚构原因。
+
+### 图表数据完整性硬规则
+
+图表 `x` 数组和每个 `series.data` 数组**必须包含查询返回的全部数据点，禁止自行精简、采样或只保留"关键点"**。例如查询返回30天的日趋势，图表必须包含30个日期和30个数值，不能只写5个。
+
+`series.data` 中每个值必须严格对应 `x` 中同一位置的日期/维度，按日期排序后逐行填入，不得错位。
 
 ## 图表要求
 
