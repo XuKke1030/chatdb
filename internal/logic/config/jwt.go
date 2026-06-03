@@ -11,7 +11,7 @@ import (
 func (s *sConfig) GetJwtOptions(ctx context.Context, secret string) (option *model.JwtOption, err error) {
 	v, err := consts.Cache.GetOrSetFunc(ctx, "jwt_cfg_options", func(ctx context.Context) (value interface{}, err error) {
 		newMap := make(map[string]*model.JwtOption)
-		for _, option := range consts.Config.Jwt {
+		for _, option := range consts.GetConfig().Jwt {
 			newMap[option.Subject] = option
 		}
 		value = newMap

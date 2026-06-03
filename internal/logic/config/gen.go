@@ -6,6 +6,7 @@ import (
 	"ai-chat-sql/internal/service"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/gogf/gf/v2/database/gdb"
@@ -44,10 +45,19 @@ func (s *sConfig) GetDataBase(ctx context.Context, databaseId int) (db gdb.DB, e
 		return
 	}
 	db, err = gdb.New(gdb.ConfigNode{
-		Link: link,
+		Link:   link,
+		DryRun: true,
 	})
 	if err != nil {
 		return
+	}
+
+	// 连接层只读加固：所有写入操作在驱动层被拒绝
+	switch {
+	case strings.HasPrefix(link, "mysql:"):
+		_, _ = db.Exec(ctx, "SET SESSION TRANSACTION READ ONLY")
+	case strings.HasPrefix(link, "pgsql:"):
+		_, _ = db.Exec(ctx, "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
 	}
 
 	// 写入缓存，使用写锁

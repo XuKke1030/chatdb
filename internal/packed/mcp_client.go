@@ -16,11 +16,11 @@ func init() {
 		var tryErr error
 		for i := 0; i < 10; i++ {
 			err := func() (err error) {
-				mcpClient, err := client.NewSSEMCPClient(fmt.Sprintf("http://%s/sse", consts.Config.AiConfig.Mcp.Address))
+				mcpClient, err := client.NewSSEMCPClient(fmt.Sprintf("http://%s/sse", consts.GetConfig().AiConfig.Mcp.Address))
 				if err != nil {
 					return
 				}
-				consts.McpClient = mcpClient
+				consts.SetMcpClient(mcpClient)
 				if err = mcpClient.Start(consts.Ctx); err != nil {
 					return
 				}

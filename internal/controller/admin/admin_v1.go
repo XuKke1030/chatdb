@@ -5,6 +5,7 @@ import (
 	"ai-chat-sql/internal/logic/aidgp"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
+	"ai-chat-sql/utility"
 	"bytes"
 	"context"
 	"encoding/csv"
@@ -75,31 +76,50 @@ func (c *ControllerV1) AdminLogin(ctx context.Context, req *v1.AdminLoginReq) (r
 }
 
 func (c *ControllerV1) AdminProfile(ctx context.Context, req *v1.AdminProfileReq) (res *v1.AdminProfileRes, err error) {
-	adminId := ctx.Value(model.UserGroup{})
-	if adminId != nil {
-		if id, ok := adminId.(int); ok && id > 0 {
-			record, dbErr := g.DB("master").Model("admin_account").Ctx(ctx).Where("id = ?", id).One()
-			if dbErr == nil && record != nil {
-				return &v1.AdminProfileRes{
-					Username: record["username"].String(),
-					Role:     record["role"].String(),
-				}, nil
-			}
+	adminId := model.UserIdFromContext(ctx)
+	if adminId > 0 {
+		record, dbErr := g.DB("master").Model("admin_account").Ctx(ctx).Where("id = ?", adminId).One()
+		if dbErr == nil && record != nil {
+			return &v1.AdminProfileRes{
+				Username: record["username"].String(),
+				Role:     record["role"].String(),
+			}, nil
 		}
 	}
 	return &v1.AdminProfileRes{Username: "admin", Role: "administrator"}, nil
 }
 
 func (c *ControllerV1) AdminUsers(ctx context.Context, req *v1.AdminUsersReq) (res *v1.AdminUsersRes, err error) {
-	users, err := listAdminUsers(ctx)
+	users, total, err := listAdminUsers(ctx, req.Page, req.PageSize)
 	if err != nil {
 		return nil, err
 	}
-	return &v1.AdminUsersRes{List: users}, nil
+	return &v1.AdminUsersRes{List: users, Total: total, Page: req.Page, PageSize: req.PageSize}, nil
 }
 
 func (c *ControllerV1) AdminKnowledgeBases(ctx context.Context, req *v1.AdminKnowledgeBasesReq) (res *v1.AdminKnowledgeBasesRes, err error) {
-	return &v1.AdminKnowledgeBasesRes{List: knowledgeBaseOptions(ctx)}, nil
+	all := knowledgeBaseOptions(ctx)
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	total := len(all)
+	start := (page - 1) * pageSize
+	if start >= total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return &v1.AdminKnowledgeBasesRes{List: all[start:end], Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (c *ControllerV1) AdminUpdateUserPermissions(ctx context.Context, req *v1.AdminUpdateUserPermissionsReq) (res *v1.AdminUpdateUserPermissionsRes, err error) {
@@ -159,11 +179,15 @@ func (c *ControllerV1) AdminExampleQuestions(ctx context.Context, req *v1.AdminE
 	if req.Topic != "" {
 		query = query.Where("topic", req.Topic)
 	}
-	records, err := query.OrderAsc("sort").OrderDesc("update_time").All()
+	total, err := query.Count()
 	if err != nil {
 		return nil, err
 	}
-	return &v1.AdminExampleQuestionsRes{List: scanExampleQuestions(records)}, nil
+	records, err := query.OrderAsc("sort").OrderDesc("update_time").Limit(req.PageSize).Offset((req.Page-1)*req.PageSize).All()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminExampleQuestionsRes{List: scanExampleQuestions(records), Total: total, Page: req.Page, PageSize: req.PageSize}, nil
 }
 
 func (c *ControllerV1) AdminCreateExampleQuestion(ctx context.Context, req *v1.AdminCreateExampleQuestionReq) (res *v1.AdminCreateExampleQuestionRes, err error) {
@@ -228,11 +252,15 @@ func (c *ControllerV1) AdminQuestionCandidates(ctx context.Context, req *v1.Admi
 	if req.Status != "" {
 		query = query.Where("status", req.Status)
 	}
-	records, err := query.OrderDesc("count").OrderDesc("last_seen_at").All()
+	total, err := query.Count()
 	if err != nil {
 		return nil, err
 	}
-	return &v1.AdminQuestionCandidatesRes{List: scanQuestionCandidates(records)}, nil
+	records, err := query.OrderDesc("count").OrderDesc("last_seen_at").Limit(req.PageSize).Offset((req.Page-1)*req.PageSize).All()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminQuestionCandidatesRes{List: scanQuestionCandidates(records), Total: total, Page: req.Page, PageSize: req.PageSize}, nil
 }
 
 func (c *ControllerV1) AdminApproveQuestionCandidate(ctx context.Context, req *v1.AdminApproveQuestionCandidateReq) (res *v1.AdminApproveQuestionCandidateRes, err error) {
@@ -277,11 +305,27 @@ func (c *ControllerV1) AdminRejectQuestionCandidate(ctx context.Context, req *v1
 }
 
 func (c *ControllerV1) AdminDataSources(ctx context.Context, req *v1.AdminDataSourcesReq) (res *v1.AdminDataSourcesRes, err error) {
-	records, err := g.DB("master").Model("admin_data_source").Ctx(ctx).OrderAsc("id").All()
+	query := g.DB("master").Model("admin_data_source").Ctx(ctx)
+	total, err := query.Count()
 	if err != nil {
 		return nil, err
 	}
-	return &v1.AdminDataSourcesRes{List: scanDataSources(records)}, nil
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	records, err := query.OrderAsc("id").Limit(pageSize).Offset((page-1)*pageSize).All()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminDataSourcesRes{List: scanDataSources(records), Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (c *ControllerV1) AdminUpdateDataSource(ctx context.Context, req *v1.AdminUpdateDataSourceReq) (res *v1.AdminUpdateDataSourceRes, err error) {
@@ -448,11 +492,27 @@ func (c *ControllerV1) AdminGridImportUpload(ctx context.Context, req *v1.AdminG
 }
 
 func (c *ControllerV1) AdminGridImports(ctx context.Context, req *v1.AdminGridImportsReq) (res *v1.AdminGridImportsRes, err error) {
-	records, err := g.DB("master").Model("admin_grid_import").Ctx(ctx).OrderDesc("create_time").All()
+	query := g.DB("master").Model("admin_grid_import").Ctx(ctx)
+	total, err := query.Count()
 	if err != nil {
 		return nil, err
 	}
-	return &v1.AdminGridImportsRes{List: scanGridImports(records)}, nil
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	records, err := query.OrderDesc("create_time").Limit(pageSize).Offset((page-1)*pageSize).All()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminGridImportsRes{List: scanGridImports(records), Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func (c *ControllerV1) AdminGridImportDetail(ctx context.Context, req *v1.AdminGridImportDetailReq) (res *v1.AdminGridImportDetailRes, err error) {
@@ -665,11 +725,15 @@ func (c *ControllerV1) AdminLogs(ctx context.Context, req *v1.AdminLogsReq) (res
 	if req.LogType == "system" || req.LogType == "admin" {
 		query = query.Where("log_type = ?", req.LogType)
 	}
-	records, err := query.OrderDesc("create_time").OrderDesc("id").All()
+	total, err := query.Count()
 	if err != nil {
 		return nil, err
 	}
-	return &v1.AdminLogsRes{List: scanAdminLogs(records)}, nil
+	records, err := query.OrderDesc("create_time").OrderDesc("id").Limit(req.PageSize).Offset((req.Page-1)*req.PageSize).All()
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AdminLogsRes{List: scanAdminLogs(records), Total: total, Page: req.Page, PageSize: req.PageSize}, nil
 }
 
 func (c *ControllerV1) updateCandidateStatus(ctx context.Context, id int, status string) (*v1.AdminApproveQuestionCandidateRes, error) {
@@ -941,10 +1005,21 @@ func SeedAdminTables(ctx context.Context, db gdb.DB) error {
 	return nil
 }
 
-func listAdminUsers(ctx context.Context) ([]v1.AdminUserItem, error) {
-	records, err := g.DB("master").Model("user").Ctx(ctx).Fields("user_id, username, rule_level, last_login_tme, update_time").OrderAsc("user_id").All()
+func listAdminUsers(ctx context.Context, page, pageSize int) ([]v1.AdminUserItem, int, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	offset := (page - 1) * pageSize
+	total, _ := g.DB("master").Model("user").Ctx(ctx).Count()
+	records, err := g.DB("master").Model("user").Ctx(ctx).Fields("user_id, username, rule_level, last_login_tme, update_time").OrderAsc("user_id").Limit(pageSize).Offset(offset).All()
 	if err != nil {
-		return []v1.AdminUserItem{}, nil
+		return []v1.AdminUserItem{}, 0, err
 	}
 	list := make([]v1.AdminUserItem, 0, len(records))
 	for _, record := range records {
@@ -977,11 +1052,11 @@ func listAdminUsers(ctx context.Context) ([]v1.AdminUserItem, error) {
 			UpdateTime:        maxInt(record["update_time"].Int(), profile["update_time"].Int()),
 		})
 	}
-	return list, nil
+	return list, total, nil
 }
 
 func getAdminUser(ctx context.Context, id int) (v1.AdminUserItem, error) {
-	users, err := listAdminUsers(ctx)
+	users, _, err := listAdminUsers(ctx, 1, 500)
 	if err != nil {
 		return v1.AdminUserItem{}, err
 	}
@@ -1074,7 +1149,11 @@ func knowledgePermissionsForUser(ctx context.Context, userId int) []v1.Knowledge
 	if err != nil {
 		return []v1.KnowledgePermission{}
 	}
-	perms, _ := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Where("user_id = ?", userId).All()
+	perms, err := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Where("user_id = ?", userId).All()
+	if err != nil {
+		consts.Logger.Warningf(ctx, "query user knowledge permissions failed: %v", err)
+		return []v1.KnowledgePermission{}
+	}
 	enabledByCode := make(map[string]bool, len(perms))
 	for _, perm := range perms {
 		enabledByCode[normalizeQaKnowledgeCode(perm["knowledge_code"].String())] = perm["enabled"].Int() != 0
@@ -1272,7 +1351,10 @@ func insertAdminLog(ctx context.Context, logType string, username string, action
 		"result":      result,
 		"create_time": int(gtime.Timestamp()),
 	}).Insert()
-	return err
+	if err != nil {
+		consts.Logger.Warningf(ctx, "insert admin audit log failed: %v", err)
+	}
+	return nil
 }
 
 func exampleQuestionFromRecord(record gdb.Record) v1.ExampleQuestionItem {
@@ -1502,10 +1584,10 @@ func executeAdminAidgpSyncWithScope(ctx context.Context, syncType string, knowle
 }
 
 func adminSyncProvider() string {
-	if consts.Config == nil || consts.Config.QaConfig == nil || consts.Config.QaConfig.Sync == nil {
+	if consts.GetConfig() == nil || consts.GetConfig().QaConfig == nil || consts.GetConfig().QaConfig.Sync == nil {
 		return aidgp.ProviderMock
 	}
-	provider := strings.TrimSpace(consts.Config.QaConfig.Sync.Provider)
+	provider := strings.TrimSpace(consts.GetConfig().QaConfig.Sync.Provider)
 	if provider == "" {
 		return aidgp.ProviderMock
 	}
@@ -1514,8 +1596,8 @@ func adminSyncProvider() string {
 
 func adminAidgpClient(provider string) aidgp.Client {
 	cfg := aidgp.Config{Provider: provider}
-	if consts.Config != nil && consts.Config.QaConfig != nil && consts.Config.QaConfig.Sync != nil && consts.Config.QaConfig.Sync.Aidgp != nil {
-		aidgpCfg := consts.Config.QaConfig.Sync.Aidgp
+	if consts.GetConfig() != nil && consts.GetConfig().QaConfig != nil && consts.GetConfig().QaConfig.Sync != nil && consts.GetConfig().QaConfig.Sync.Aidgp != nil {
+		aidgpCfg := consts.GetConfig().QaConfig.Sync.Aidgp
 		cfg.BaseUrl = aidgpCfg.BaseUrl
 		cfg.AppKey = aidgpCfg.AppKey
 		cfg.AppSecret = aidgpCfg.AppSecret
@@ -2027,13 +2109,13 @@ func (c *ControllerV1) AdminCaseList(ctx context.Context, req *v1.AdminCaseListR
 
 	// 构建查询条件
 	if req.CaseNumber != "" {
-		db = db.WhereLike("case_number", "%"+req.CaseNumber+"%")
+		db = db.WhereLike("case_number", "%"+utility.EscapeLike(req.CaseNumber)+"%")
 	}
 	if req.CaseType != "" {
-		db = db.WhereLike("case_type", "%"+req.CaseType+"%")
+		db = db.WhereLike("case_type", "%"+utility.EscapeLike(req.CaseType)+"%")
 	}
 	if req.Region != "" {
-		db = db.WhereLike("region", "%"+req.Region+"%")
+		db = db.WhereLike("region", "%"+utility.EscapeLike(req.Region)+"%")
 	}
 	if req.StartDate != "" {
 		db = db.WhereGTE("report_time", req.StartDate+" 00:00:00")

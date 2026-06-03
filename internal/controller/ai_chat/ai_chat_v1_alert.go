@@ -8,14 +8,13 @@ import (
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 
-	"github.com/gogf/gf/v2/util/gconv"
 )
 
 func (c *ControllerV1) AlertList(ctx context.Context, req *v1.AlertListReq) (res *v1.AlertListRes, err error) {
-	userIdVal := ctx.Value(model.UserGroup{})
+	userIdVal := model.UserIdFromContext(ctx)
 	userId := 0
-	if userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal != 0 {
+		userId = userIdVal
 	}
 
 	topics := requestedAlertTopics(req.Topic, req.Topics)
@@ -47,10 +46,10 @@ func (c *ControllerV1) AlertList(ctx context.Context, req *v1.AlertListReq) (res
 }
 
 func (c *ControllerV1) AlertDismiss(ctx context.Context, req *v1.AlertDismissReq) (res *v1.AlertDismissRes, err error) {
-	userIdVal := ctx.Value(model.UserGroup{})
+	userIdVal := model.UserIdFromContext(ctx)
 	userId := 0
-	if userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal != 0 {
+		userId = userIdVal
 	}
 
 	err = service.Alert().DismissAlert(ctx, userId, req.Id)

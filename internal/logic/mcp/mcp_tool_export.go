@@ -7,13 +7,36 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
+	"regexp"
+	"strings"
 
 	"github.com/gogf/gf/v2/encoding/gjson"
 	"github.com/gogf/gf/v2/frame/g"
+	"github.com/gogf/gf/v2/util/grand"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/xuri/excelize/v2"
 )
+
+var safeNameRe = regexp.MustCompile(`[^\w\-.]`)
+
+func sanitizeFileName(name string) string {
+	return safeNameRe.ReplaceAllString(name, "_")
+}
+
+func validateExportPath(exportDir, filePath string) error {
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return fmt.Errorf("invalid file path")
+	}
+	absDir, err := filepath.Abs(exportDir)
+	if err != nil {
+		return fmt.Errorf("invalid export directory")
+	}
+	if !strings.HasPrefix(absPath, absDir+string(filepath.Separator)) {
+		return fmt.Errorf("invalid file path")
+	}
+	return nil
+}
 
 // ExportToExcel 将查询结果导出为 Excel 文件
 func (s *sMcpTool) ExportToExcel(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error) {
@@ -24,10 +47,11 @@ func (s *sMcpTool) ExportToExcel(ctx context.Context, request mcp.CallToolReques
 		return
 	}
 
-	fileName := request.GetString("fileName", "export_"+time.Now().Format("20060102_150405"))
+	fileName := request.GetString("fileName", "")
 	if fileName == "" {
-		fileName = "export_" + time.Now().Format("20060102_150405")
+		fileName = "export_" + grand.S(8, false)
 	}
+	fileName = sanitizeFileName(fileName)
 
 	// 解析数据
 	var data []map[string]interface{}
@@ -120,6 +144,10 @@ func (s *sMcpTool) ExportToExcel(ctx context.Context, request mcp.CallToolReques
 	}
 
 	filePath := filepath.Join(exportDir, fileName+".xlsx")
+	if err = validateExportPath(exportDir, filePath); err != nil {
+		err = errors.New("invalid export file path")
+		return
+	}
 
 	// 保存文件
 	if err = f.SaveAs(filePath); err != nil {
@@ -143,7 +171,11 @@ func (s *sMcpTool) ExportToExcel(ctx context.Context, request mcp.CallToolReques
 // ExportData 通用导出接口（支持 XLSX 和 JSON）
 func (s *sMcpTool) ExportData(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error) {
 	dataJson := request.GetString("data", "")
-	fileName := request.GetString("fileName", "export_"+time.Now().Format("20060102_150405"))
+	fileName := request.GetString("fileName", "")
+	if fileName == "" {
+		fileName = "export_" + grand.S(8, false)
+	}
+	fileName = sanitizeFileName(fileName)
 	exportFormat := request.GetString("format", "xlsx") // xlsx 或 json
 
 	if dataJson == "" {
@@ -163,8 +195,16 @@ func (s *sMcpTool) ExportData(ctx context.Context, request mcp.CallToolRequest) 
 
 	if exportFormat == "json" {
 		fileExt = ".json"
-		filePath = filepath.Join(exportDir, fileName+fileExt)
+	} else {
+		fileExt = ".xlsx"
+	}
+	filePath = filepath.Join(exportDir, fileName+fileExt)
+	if err = validateExportPath(exportDir, filePath); err != nil {
+		err = errors.New("invalid export file path")
+		return
+	}
 
+	if exportFormat == "json" {
 		// 写入 JSON 文件
 		if err = os.WriteFile(filePath, []byte(dataJson), 0644); err != nil {
 			err = errors.New("write json file error: " + err.Error())
@@ -172,9 +212,6 @@ func (s *sMcpTool) ExportData(ctx context.Context, request mcp.CallToolRequest) 
 		}
 	} else {
 		// 默认使用 XLSX
-		fileExt = ".xlsx"
-		filePath = filepath.Join(exportDir, fileName+fileExt)
-
 		// 解析数据并写入 XLSX
 		var data []map[string]interface{}
 		if err = gjson.Unmarshal([]byte(dataJson), &data); err != nil {

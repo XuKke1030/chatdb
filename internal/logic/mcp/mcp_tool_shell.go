@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -14,7 +15,22 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// RunSafeShellCommand 执行安全受限的终端命令
+var allowedCommands = map[string]bool{
+	"ls": true, "dir": true, "cat": true, "type": true,
+	"head": true, "tail": true, "grep": true, "find": true,
+	"wc": true, "du": true, "df": true, "pwd": true,
+	"echo": true, "date": true, "uname": true, "whoami": true,
+	"stat": true, "file": true, "tree": true, "diff": true,
+	"sort": true, "uniq": true, "cut": true, "tr": true,
+	"awk": true, "sed": true, "xargs": true, "tee": true,
+	"curl": true, "wget": true, "ping": true, "nslookup": true,
+	"top": true, "ps": true, "free": true, "uptime": true,
+	"ifconfig": true, "ip": true, "netstat": true, "ss": true,
+	"hostname": true, "id": true, "env": true, "printenv": true,
+	"which": true, "where": true, "whereis": true,
+}
+
+// RunSafeShellCommand 执行安全受限的终端命令（白名单模式）
 func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error) {
 	command := request.GetString("command", "")
 	if command == "" {
@@ -22,7 +38,6 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 		return
 	}
 
-	// 超时（秒），默认 10 秒，最大 60 秒
 	timeoutSeconds := gconv.Int(request.GetString("timeoutSeconds", "10"))
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 10
@@ -31,17 +46,14 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 		timeoutSeconds = 60
 	}
 
-	// 可选工作目录
 	cwd := request.GetString("cwd", "")
 
-	// 风险校验
 	if err = validateSafeCommand(command); err != nil {
 		out = mcp.NewToolResultText(err.Error())
 		err = nil
 		return
 	}
 
-	// 校验 cwd
 	if cwd != "" {
 		if err = validateCwd(cwd); err != nil {
 			out = mcp.NewToolResultText(err.Error())
@@ -53,7 +65,6 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 	ctxTimeout, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	// 不使用登录 shell（去掉 -l），避免 source 用户配置文件导致绕过
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
@@ -76,7 +87,6 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 
 	killedByTimeout := ctxTimeout.Err() == context.DeadlineExceeded
 
-	// 退出码
 	exitCode := 0
 	if runErr != nil {
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
@@ -86,7 +96,6 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 		}
 	}
 
-	// 限制输出大小，防止过大返回
 	stdout := trimLong(stdoutBytes.String(), 64*1024)
 	stderr := trimLong(stderrBytes.String(), 32*1024)
 
@@ -105,97 +114,38 @@ func (s *sMcpTool) RunSafeShellCommand(ctx context.Context, request mcp.CallTool
 	return
 }
 
-// validateSafeCommand 黑名单规则与操作符禁用
+// validateSafeCommand 白名单校验：只允许预定义安全命令，禁止管道/重定向/分号等复合执行
 func validateSafeCommand(command string) error {
-	normalized := strings.ToLower(strings.TrimSpace(command))
+	normalized := strings.TrimSpace(command)
 
-	// 禁用危险操作符与特性（避免复合执行、重定向、替换等）。放开 | 管道符。
-	bannedOperators := []string{
-		"||", "&&", ";", ">", ">>", "<", "<<", "`", "$(", "&", "2>", "2>>",
+	// 禁止复合执行操作符
+	if strings.ContainsAny(normalized, "|;&`$") {
+		return errors.New("命令不允许包含管道、逻辑运算、重定向、命令替换或后台执行符号")
 	}
-	for _, op := range bannedOperators {
-		if strings.Contains(normalized, op) {
-			return errors.New("命令包含被禁用的操作符: " + op)
-		}
+	if strings.Contains(normalized, ">\n") || strings.Contains(normalized, ">>") {
+		return errors.New("命令不允许包含重定向")
 	}
-
-	// 允许使用 |，对每个分段分别做首 token 校验
-	segments := strings.Split(normalized, "|")
-	if len(segments) > 1 {
-		if len(segments)-1 > 3 {
-			return errors.New("管道分段过多：最多允许 3 个管道")
-		}
-		for _, seg := range segments {
-			segTrim := strings.TrimSpace(seg)
-			if segTrim == "" {
-				return errors.New("无效的空管道分段")
-			}
-			if err := validateFirstToken(segTrim); err != nil {
-				return err
-			}
-		}
-	} else {
-		if err := validateFirstToken(normalized); err != nil {
-			return err
-		}
+	if strings.Contains(normalized, "<") {
+		return errors.New("命令不允许包含输入重定向")
 	}
 
-	// 禁用高危命令片段（含 shell 元编程/逃逸手段）
-	bannedFragments := []string{
-		"rm -rf", ":(){:|:&};:", "mkfs.", "/dev/", "/etc/passwd",
-		"eval ", "exec ", "source ", ". ",
-		"export ", "alias ", "function ", "typeset ", "declare ",
-		"bash -i", "sh -i", "nc -", "ncat ", "/dev/tcp", "/dev/udp",
+	// 提取首命令 token 并校验白名单
+	firstToken := firstTokenOf(strings.ToLower(normalized))
+	if firstToken == "" {
+		return errors.New("空命令")
 	}
-	for _, frag := range bannedFragments {
-		if strings.Contains(normalized, frag) {
-			return errors.New("命令包含危险片段: " + strings.TrimSpace(frag))
-		}
+	base := filepath.Base(firstToken)
+	if !allowedCommands[base] {
+		return errors.New("命令不在允许列表中: " + base + "。仅允许只读查看类命令")
 	}
 
 	return nil
 }
 
-func validateFirstToken(cmd string) error {
-	// 禁用高危命令（匹配首 token）
-	bannedCommands := []string{
-		// 文件系统破坏
-		"rm", "rmdir", "mkfs", "dd", "chmod", "chown", "mv",
-		// 系统控制
-		"shutdown", "reboot", "halt", "poweroff", "init", "service", "systemctl",
-		"mount", "umount",
-		// 进程管理
-		"kill", "pkill", "killall",
-		// 定时任务
-		"crontab", "at", "batch",
-		// 用户/权限管理
-		"useradd", "userdel", "usermod", "groupadd", "groupdel", "visudo", "sudo", "su",
-		// Shell 元编程/逃逸
-		"eval", "exec", "source", "export", "alias", "unalias",
-		"function", "typeset", "declare", "unset",
-		"bash", "sh", "zsh", "csh", "tcsh", "fish", "dash", "ksh",
-		// 网络工具（常用于反弹 shell）
-		"nc", "ncat", "socat", "telnet",
-		// 包管理（避免安装任意软件）
-		"apt", "yum", "dnf", "pip", "npm", "gem", "cargo",
-	}
-
-	firstToken := firstTokenOf(cmd)
-	for _, b := range bannedCommands {
-		if firstToken == b {
-			return errors.New("命令被禁用: " + b)
-		}
-	}
-	return nil
-}
-
-// validateCwd 校验工作目录，只允许在白名单目录下执行
 func validateCwd(cwd string) error {
-	// 禁止路径穿越
 	if strings.Contains(cwd, "..") {
 		return errors.New("工作目录不允许包含 .. 路径穿越")
 	}
-	// 禁止敏感系统目录
 	bannedPrefixes := []string{
 		"/etc", "/root", "/boot", "/sys", "/proc", "/dev",
 		"C:\\Windows\\System32", "C:\\Windows\\SysWOW64",
@@ -222,7 +172,6 @@ func trimLong(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	// 截断并标记
 	suffix := "\n...[truncated]"
 	if max > len(suffix) {
 		return s[:max-len(suffix)] + suffix

@@ -8,7 +8,6 @@ import (
 	"ai-chat-sql/internal/service"
 	"ai-chat-sql/utility"
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -29,12 +28,21 @@ func init() {
 }
 
 func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan any) {
+	ctx = mcp.ContextWithSessionID(ctx, in.SessionId)
+	ctx, _ = mcp.WithTablesAccumulator(ctx)
 	totalStart := time.Now()
 	stageStart := totalStart
 	logStage := func(stage string) {
 		consts.Logger.Infof(ctx, "perf ask_number_ai stage=%s topic=%s databaseId=%d sessionId=%s costMs=%d totalMs=%d", stage, in.Topic, in.DatabaseId, in.SessionId, time.Since(stageStart).Milliseconds(), time.Since(totalStart).Milliseconds())
 		stageStart = time.Now()
 	}
+
+	// 统一保障：任何退出路径都会关闭 respChan 并 cancel heartbeat
+	closer := newChanCloser(respChan)
+	defer closer.Close()
+
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	logStage("start")
 	_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
@@ -46,16 +54,11 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 
 	logStage("send_start")
 
-	// 表名累加器，在MCP工具handler闭包中收集
-	var tablesSlice []string
-	tablesPtr := &tablesSlice
-
-	HeartbeatCtx, cancel := context.WithCancel(ctx)
-	s.AiChatHeartbeat(HeartbeatCtx, respChan)
+	s.AiChatHeartbeat(heartbeatCtx, respChan)
 
 	llm, err := service.AI().GetChatModel(in.Ai, in.Model)
 	if err != nil {
-		cancel()
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 		return
 	}
 	logStage("model")
@@ -71,24 +74,24 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 			Event: "tool_call",
 			Data:  dataMap,
 		}, respChan)
-		// 从SQL工具返回结果中提取表名
+		// MCP server 的 tool handler 收到的是独立 context，无法传播我们设置的 context value，
+		// 所以在 Eino agent 的回调（仍持有原始 context）中从结果提取表名并写入累加器。
 		if name == "SQL_Actuator" {
 			var resultText string
 			if text, ok := result.Content[0].(gMcp.TextContent); ok {
 				resultText = text.Text
 			} else {
-				resultText = fmt.Sprintf("%v", result.Content[0])
+				resultText = gconv.String(result.Content[0])
 			}
 			for _, t := range mcp.ExtractTableNames(resultText) {
-				mcp.AddTable(tablesPtr, t)
-				consts.Logger.Infof(ctx, "perf mcp_handler added_table=%s total=%d", t, len(*tablesPtr))
+				mcp.AddTableToContext(ctx, t)
 			}
 		}
 		out = result
 		return
 	})
 	if err != nil {
-		cancel()
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 		return
 	}
 	logStage("mcp_tools")
@@ -99,7 +102,7 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		MaxStep:          35,
 	})
 	if err != nil {
-		cancel()
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 		return
 	}
 
@@ -109,14 +112,14 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 		Name:     "db_type:" + gconv.String(in.DatabaseId),
 	}).Where("database_id = ?", in.DatabaseId).Value("db_type")
 	if dbTypeErr != nil {
-		cancel()
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 		return
 	}
 	logStage("database_type")
 
 	prompt, err := service.Prompt().GetPrompt(ctx, consts.PromptMain)
 	if err != nil {
-		cancel()
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 		return
 	}
 	if g.IsEmpty(in.Prompt) {
@@ -172,21 +175,25 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 	msg, err := aiAgent.Generate(timeoutCtx, messages)
 	if err != nil {
 		consts.Logger.Errorf(ctx, "aiAgent.Generate error: %v", err)
-		cancel()
 		if timeoutCtx.Err() == context.DeadlineExceeded {
 			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 				Event: "error",
 				Data:  g.Map{"message": "查询超时，请尝试简化问题或换一种问法"},
 			}, respChan)
-			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
+		} else {
+			_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
+				Event: "error",
+				Data:  g.Map{"message": utility.SafeUserErr(err)},
+			}, respChan)
 		}
+		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
 		return
 	}
 	logStage("agent_generate")
 
 	// 发送表名
-	if len(*tablesPtr) > 0 {
-		tablesStr := strings.Join(*tablesPtr, ",")
+	if t := mcp.TablesFromContext(ctx); t != nil && len(*t) > 0 {
+		tablesStr := strings.Join(*t, ",")
 		consts.Logger.Infof(ctx, "perf ask_number_sse send_tables=%s", tablesStr)
 		_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 			Event:   "tables",
@@ -207,5 +214,4 @@ func (s *sAiChat) Chat(ctx context.Context, in model.ChatInput, respChan chan an
 
 	consts.Logger.Infof(ctx, "perf ask_number_sse send_end")
 	_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{Event: "end"}, respChan)
-	cancel()
 }

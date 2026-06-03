@@ -1,14 +1,29 @@
 package traffic
 
 import (
+	"ai-chat-sql/internal/consts"
+	"ai-chat-sql/internal/logic/dlock"
 	"context"
 	"fmt"
 
+	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 )
 
 func (s *sTraffic) RefreshAggregates(ctx context.Context, dateFrom string, dateTo string) error {
+	lockKey := "lock:aggregate:traffic"
+	acquired, lockErr := dlock.TryAcquire(ctx, lockKey, 15)
+	if lockErr != nil {
+		consts.Logger.Warningf(ctx, "tryAcquire %s failed: %v", lockKey, lockErr)
+		return fmt.Errorf("acquire aggregate lock: %w", lockErr)
+	}
+	if !acquired {
+		consts.Logger.Infof(ctx, "skip RefreshAggregates: lock %s held by another instance", lockKey)
+		return nil
+	}
+	defer dlock.Release(ctx, lockKey)
+
 	from, to := normalizeAggregateWindow(dateFrom, dateTo)
 	if err := s.refreshTrafficHourly(ctx, from, to); err != nil {
 		return err
@@ -48,11 +63,11 @@ func normalizeQueryDateOnly(value string) string {
 }
 
 func (s *sTraffic) refreshTrafficHourly(ctx context.Context, from string, to string) error {
-	db := g.DB("master")
-	if _, err := db.Exec(ctx, "DELETE FROM traffic_metric_hourly WHERE metric_hour >= ? AND metric_hour <= ?", from, to); err != nil {
-		return err
-	}
-	_, err := db.Exec(ctx, `
+	return g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("DELETE FROM traffic_metric_hourly WHERE metric_hour >= ? AND metric_hour <= ?", from, to); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`
 INSERT INTO traffic_metric_hourly (
 metric_hour, region, device_id, device_name, total, in_count, out_count,
 hk_macau_count, mainland_count, foreign_count,
@@ -78,15 +93,16 @@ FROM traffic_gate_record r
 LEFT JOIN traffic_gate_device d ON d.device_id = r.device_id
 WHERE r.snapshot_time >= ? AND r.snapshot_time <= ?
 GROUP BY metric_hour, region, r.device_id, device_name`, from, to)
-	return err
+		return err
+	})
 }
 
 func (s *sTraffic) refreshTrafficDaily(ctx context.Context, from string, to string) error {
-	db := g.DB("master")
-	if _, err := db.Exec(ctx, "DELETE FROM traffic_metric_daily WHERE metric_date >= DATE(?) AND metric_date <= DATE(?)", from, to); err != nil {
-		return err
-	}
-	_, err := db.Exec(ctx, `
+	return g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("DELETE FROM traffic_metric_daily WHERE metric_date >= DATE(?) AND metric_date <= DATE(?)", from, to); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`
 INSERT INTO traffic_metric_daily (
 metric_date, region, device_id, device_name, total, in_count, out_count,
 hk_macau_count, mainland_count, foreign_count,
@@ -116,15 +132,16 @@ LEFT JOIN traffic_gate_device d ON d.device_id = r.device_id
 LEFT JOIN traffic_holiday h ON h.holiday_date = DATE(r.snapshot_time)
 WHERE r.snapshot_time >= ? AND r.snapshot_time <= ?
 GROUP BY metric_date, region, r.device_id, device_name`, from, to)
-	return err
+		return err
+	})
 }
 
 func (s *sTraffic) refreshTrafficStayDaily(ctx context.Context, from string, to string) error {
-	db := g.DB("master")
-	if _, err := db.Exec(ctx, "DELETE FROM traffic_vehicle_stay_daily WHERE metric_date >= DATE(?) AND metric_date <= DATE(?)", from, to); err != nil {
-		return err
-	}
-	_, err := db.Exec(ctx, `
+	return g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("DELETE FROM traffic_vehicle_stay_daily WHERE metric_date >= DATE(?) AND metric_date <= DATE(?)", from, to); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`
 INSERT INTO traffic_vehicle_stay_daily (
 metric_date, plate_normalized, region, device_count, stay_minutes,
 is_hk_macau, first_seen_at, last_seen_at, source_provider, update_time
@@ -144,17 +161,18 @@ FROM traffic_gate_record r
 WHERE r.snapshot_time >= ? AND r.snapshot_time <= ?
 GROUP BY metric_date, r.plate_normalized, region
 HAVING device_count >= 2`, from, to)
-	return err
+		return err
+	})
 }
 
 func (s *sTraffic) refreshStayDistributionDaily(ctx context.Context, from string, to string) error {
-	db := g.DB("master")
 	dateFrom := normalizeQueryDateOnly(from)
 	dateTo := normalizeQueryDateOnly(to)
-	if _, err := db.Exec(ctx, "DELETE FROM traffic_stay_distribution_daily WHERE metric_date >= ? AND metric_date <= ?", dateFrom, dateTo); err != nil {
-		return err
-	}
-	_, err := db.Exec(ctx, `
+	return g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("DELETE FROM traffic_stay_distribution_daily WHERE metric_date >= ? AND metric_date <= ?", dateFrom, dateTo); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`
 INSERT INTO traffic_stay_distribution_daily (
 metric_date, region, bucket, is_hk_macau, vehicle_count, avg_stay_minutes,
 source_provider, update_time
@@ -177,20 +195,18 @@ UNIX_TIMESTAMP() AS update_time
 FROM traffic_vehicle_stay_daily s
 WHERE s.metric_date >= ? AND s.metric_date <= ?
 GROUP BY s.metric_date, s.region, bucket, s.is_hk_macau`, dateFrom, dateTo)
-	return err
+		return err
+	})
 }
 
 func (s *sTraffic) refreshOriginDaily(ctx context.Context, from string, to string) error {
-	db := g.DB("master")
 	dateFrom := normalizeQueryDateOnly(from)
 	dateTo := normalizeQueryDateOnly(to)
-	if _, err := db.Exec(ctx, "DELETE FROM traffic_origin_daily WHERE metric_date >= ? AND metric_date <= ?", dateFrom, dateTo); err != nil {
-		return err
-	}
-
-	// Group by province derived from first character of plate_normalized + is_hk_macau flag
-	// For Guangdong plates, further group by city derived from second character
-	_, err := db.Exec(ctx, `
+	return g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("DELETE FROM traffic_origin_daily WHERE metric_date >= ? AND metric_date <= ?", dateFrom, dateTo); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`
 INSERT INTO traffic_origin_daily (
 metric_date, province, city, vehicle_count, is_hk_macau,
 source_provider, update_time
@@ -243,44 +259,60 @@ UNIX_TIMESTAMP() AS update_time
 FROM traffic_gate_record r
 WHERE r.snapshot_time >= ? AND r.snapshot_time <= ?
 GROUP BY metric_date, province, city`, from, to)
-	return err
+		return err
+	})
 }
 
-// SyncHolidaysFromCode syncs hardcoded 2026 holiday data into traffic_holiday table.
+// SyncHolidaysFromCode syncs hardcoded holiday data into traffic_holiday table.
 func (s *sTraffic) SyncHolidaysFromCode(ctx context.Context) error {
 	db := g.DB("master")
-	now := int(gtime.Timestamp())
+	failCount := 0
 
 	for dateStr, name := range chinaHolidayDates2025 {
-		_, _ = db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
 VALUES (?, ?, 'holiday')
 ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
-			dateStr, name)
+			dateStr, name); err != nil {
+			consts.Logger.Warningf(ctx, "holiday sync failed for %s: %v", dateStr, err)
+			failCount++
+		}
 	}
 	for dateStr, name := range chinaAdjustedWorkdays2025 {
-		_, _ = db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
 VALUES (?, ?, 'workday')
 ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
-			dateStr, name)
+			dateStr, name); err != nil {
+			consts.Logger.Warningf(ctx, "holiday sync failed for %s: %v", dateStr, err)
+			failCount++
+		}
 	}
 
 	for dateStr, name := range chinaHolidayDates2026 {
-		_, _ = db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
 VALUES (?, ?, 'holiday')
 ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
-			dateStr, name)
+			dateStr, name); err != nil {
+			consts.Logger.Warningf(ctx, "holiday sync failed for %s: %v", dateStr, err)
+			failCount++
+		}
 	}
 	for dateStr, name := range chinaAdjustedWorkdays2026 {
-		_, _ = db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
 VALUES (?, ?, 'workday')
 ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
-			dateStr, name)
+			dateStr, name); err != nil {
+			consts.Logger.Warningf(ctx, "holiday sync failed for %s: %v", dateStr, err)
+			failCount++
+		}
 	}
-	_ = now
+
+	if failCount > 0 {
+		return fmt.Errorf("holiday sync: %d statements failed", failCount)
+	}
 	return nil
 }
 

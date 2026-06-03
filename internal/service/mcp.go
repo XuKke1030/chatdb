@@ -37,8 +37,6 @@ type (
 		ExportToExcel(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
 		// ExportData 通用导出接口（支持 XLSX 和 JSON）
 		ExportData(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
-		// ExecRedisCommand 执行Redis命令
-		ExecRedisCommand(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
 		// RunSafeShellCommand 执行安全受限的终端命令
 		RunSafeShellCommand(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)
 		GetNowTime(ctx context.Context, request mcp.CallToolRequest) (out *mcp.CallToolResult, err error)

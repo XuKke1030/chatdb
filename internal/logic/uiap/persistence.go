@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/logic/integration"
 
 	"github.com/gogf/gf/v2/frame/g"
@@ -88,10 +89,12 @@ func ensureLocalUser(ctx context.Context, externalUserId string, username string
 	if record, err := g.DB("master").Model("user").Ctx(ctx).Fields("user_id").
 		Where("username = ?", username).One(); err == nil && record != nil {
 		userId := record["user_id"].Int64()
-		_, _ = g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", userId).Data(g.Map{
+		if _, err := g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", userId).Data(g.Map{
 			"rule_level":  ruleLevel,
 			"update_time": now,
-		}).Update()
+		}).Update(); err != nil {
+			consts.Logger.Warningf(ctx, "uiap update user rule_level failed: %v", err)
+		}
 		return userId, nil
 	}
 

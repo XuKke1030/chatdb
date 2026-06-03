@@ -36,15 +36,15 @@ func (s *sSystemInit) Init(ctx context.Context) (err error) {
 func (s *sSystemInit) CreatePrivateKey(ctx context.Context) (err error) {
 	const privateKeyPath = "./private.key"
 	if !gfile.Exists(privateKeyPath) {
-		consts.PrivateKey = gbase64.EncodeString(fmt.Sprintf(
+		consts.SetPrivateKey(gbase64.EncodeString(fmt.Sprintf(
 			"%s-%s",
 			grand.S(64, true), gconv.String(gtime.Now().UnixMilli()),
-		))
-		if err = gfile.PutContents(privateKeyPath, consts.PrivateKey); err != nil {
+		)))
+		if err = gfile.PutContents(privateKeyPath, consts.PrivateKeyValue()); err != nil {
 			return
 		}
 		return
 	}
-	consts.PrivateKey = gfile.GetContents(privateKeyPath)
+	consts.SetPrivateKey(gfile.GetContents(privateKeyPath))
 	return
 }

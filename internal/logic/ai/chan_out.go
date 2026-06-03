@@ -109,7 +109,8 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, strea
 		var reasonBuf strings.Builder
 
 		// 首个 token 30s 超时，后续每个 chunk 15s 超时
-		timeoutCh := time.After(30 * time.Second)
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
 
 		for {
 			chCh := make(chan chunkResult, 1)
@@ -124,7 +125,7 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, strea
 				cancel()
 				return
 
-			case <-timeoutCh:
+			case <-timer.C:
 				_ = model.SendChatOutDataItem(ctx, model.ChatOutDataItem{
 					Event: "error",
 					Data:  g.Map{"message": "查询超时，请尝试简化问题或换一种问法"},
@@ -134,7 +135,13 @@ func (s *sAiChat) AiChatStreamOut(ctx context.Context, closer *chanCloser, strea
 				return
 
 			case res := <-chCh:
-				timeoutCh = time.After(15 * time.Second)
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(15 * time.Second)
 
 				if errors.Is(res.err, io.EOF) {
 					consts.Logger.Infof(ctx, "perf ask_number_stream EOF state=%d bufLen=%d reasonLen=%d clarifyLen=%d", state, buffer.Len(), reasonBuf.Len(), clarifyBuf.Len())

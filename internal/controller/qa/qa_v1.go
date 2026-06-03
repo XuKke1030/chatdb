@@ -23,7 +23,6 @@ import (
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
-	"github.com/gogf/gf/v2/util/gconv"
 )
 
 func (c *ControllerV1) KnowledgeBases(ctx context.Context, req *v1.KnowledgeBasesReq) (res *v1.KnowledgeBasesRes, err error) {
@@ -1556,10 +1555,10 @@ func createQaSyncPlaceholder(ctx context.Context, syncType string, knowledgeCode
 }
 
 func qaSyncProvider() string {
-	if consts.Config == nil || consts.Config.QaConfig == nil || consts.Config.QaConfig.Sync == nil {
+	if consts.GetConfig() == nil || consts.GetConfig().QaConfig == nil || consts.GetConfig().QaConfig.Sync == nil {
 		return aidgp.ProviderMock
 	}
-	provider := strings.TrimSpace(consts.Config.QaConfig.Sync.Provider)
+	provider := strings.TrimSpace(consts.GetConfig().QaConfig.Sync.Provider)
 	if provider == "" {
 		return aidgp.ProviderMock
 	}
@@ -1567,10 +1566,10 @@ func qaSyncProvider() string {
 }
 
 func qaWebSearchConfig() *model.QaWebSearchConfig {
-	if consts.Config == nil || consts.Config.QaConfig == nil || consts.Config.QaConfig.WebSearch == nil {
+	if consts.GetConfig() == nil || consts.GetConfig().QaConfig == nil || consts.GetConfig().QaConfig.WebSearch == nil {
 		return &model.QaWebSearchConfig{Provider: "local"}
 	}
-	return consts.Config.QaConfig.WebSearch
+	return consts.GetConfig().QaConfig.WebSearch
 }
 
 func qaSyncPlaceholderMessage(provider string, syncType string, knowledgeCode string) string {
@@ -1581,10 +1580,10 @@ func qaSyncPlaceholderMessage(provider string, syncType string, knowledgeCode st
 	if provider != "aidgp" {
 		return fmt.Sprintf("当前同步 provider=%s，外部同步未启用；已跳过 %s 的 %s 同步。", provider, scope, syncType)
 	}
-	if consts.Config == nil || consts.Config.QaConfig == nil || consts.Config.QaConfig.Sync == nil || consts.Config.QaConfig.Sync.Aidgp == nil {
+	if consts.GetConfig() == nil || consts.GetConfig().QaConfig == nil || consts.GetConfig().QaConfig.Sync == nil || consts.GetConfig().QaConfig.Sync.Aidgp == nil {
 		return fmt.Sprintf("AIDGP 同步适配层已预留，但配置不完整；未发起 %s 的 %s 同步。", scope, syncType)
 	}
-	aidgp := consts.Config.QaConfig.Sync.Aidgp
+	aidgp := consts.GetConfig().QaConfig.Sync.Aidgp
 	if strings.TrimSpace(aidgp.BaseUrl) == "" || strings.TrimSpace(aidgp.AppKey) == "" || strings.TrimSpace(aidgp.AppSecret) == "" {
 		return fmt.Sprintf("AIDGP 同步适配层已预留，但 baseUrl/appKey/appSecret 未完整配置；未发起 %s 的 %s 同步。", scope, syncType)
 	}
@@ -1656,8 +1655,8 @@ func executeQaSync(ctx context.Context, syncType string, knowledgeCode string) (
 
 func qaAidgpClient(provider string) aidgp.Client {
 	cfg := aidgp.Config{Provider: provider}
-	if consts.Config != nil && consts.Config.QaConfig != nil && consts.Config.QaConfig.Sync != nil && consts.Config.QaConfig.Sync.Aidgp != nil {
-		aidgpCfg := consts.Config.QaConfig.Sync.Aidgp
+	if consts.GetConfig() != nil && consts.GetConfig().QaConfig != nil && consts.GetConfig().QaConfig.Sync != nil && consts.GetConfig().QaConfig.Sync.Aidgp != nil {
+		aidgpCfg := consts.GetConfig().QaConfig.Sync.Aidgp
 		cfg.BaseUrl = aidgpCfg.BaseUrl
 		cfg.AppKey = aidgpCfg.AppKey
 		cfg.AppSecret = aidgpCfg.AppSecret
@@ -1766,11 +1765,11 @@ func newQaSessionId() string {
 }
 
 func currentUserId(ctx context.Context) int64 {
-	userIdVal := ctx.Value(model.UserGroup{})
-	if userIdVal == nil {
+	userIdVal := model.UserIdFromContext(ctx)
+	if userIdVal == 0 {
 		return 0
 	}
-	return gconv.Int64(userIdVal)
+	return int64(userIdVal)
 }
 
 func normalizeQaKnowledgeCode(code string) string {

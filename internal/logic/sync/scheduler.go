@@ -7,6 +7,7 @@ import (
 
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/logic/aidgp"
+	"ai-chat-sql/internal/logic/dlock"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 
@@ -15,7 +16,7 @@ import (
 )
 
 func StartScheduler(ctx context.Context) {
-	interval := consts.Config.Sync.IntervalSeconds
+	interval := consts.GetConfig().Sync.IntervalSeconds
 	if interval <= 0 {
 		interval = 1800
 	}
@@ -51,10 +52,23 @@ func runScheduledSyncs(ctx context.Context) {
 		{"grid", aidgp.SyncGridData},
 	}
 
+	now := int(gtime.Timestamp())
+
 	for _, ds := range dataSources {
+		lockKey := "lock:schedule:" + ds.sourceType
+		acquired, lockErr := dlock.TryAcquire(ctx, lockKey, 30)
+		if lockErr != nil {
+			consts.Logger.Warningf(ctx, "tryAcquire %s failed: %v", lockKey, lockErr)
+			continue
+		}
+		if !acquired {
+			continue
+		}
+
 		record, err := g.DB("master").Model("admin_data_source").Ctx(ctx).
 			Where("source_type = ?", ds.sourceType).One()
 		if err != nil || record == nil || record["enabled"].Int() == 0 {
+			dlock.Release(ctx, lockKey)
 			continue
 		}
 
@@ -63,14 +77,13 @@ func runScheduledSyncs(ctx context.Context) {
 
 		scope := aidgp.SyncScope{}
 		if record["latest_sync"].Int() > 0 {
-			scope.Since = time.Unix(int64(record["latest_sync"].Int()), 0).Format(time.RFC3339)
+			scope.Since = time.Unix(int64(record["latest_sync"].Int()), 0).Format("2006-01-02T15:04:05Z07:00")
 		}
 
 		_, syncErr := client.SyncByType(ctx, ds.syncType)
-		now := int(gtime.Timestamp())
-		statusVal := "ready"
+		statusVal := "success"
 		if syncErr != nil {
-			g.Log().Warningf(ctx, "scheduled sync failed for %s: %v", ds.sourceType, syncErr)
+			consts.Logger.Warningf(ctx, "scheduled sync failed for %s: %v", ds.sourceType, syncErr)
 			statusVal = "error"
 			service.Alert().AddAlert(ctx, model.AlertItem{
 				Topic:      ds.sourceType,
@@ -81,24 +94,28 @@ func runScheduledSyncs(ctx context.Context) {
 			})
 		}
 
-		_, _ = g.DB("master").Model("admin_data_source").Ctx(ctx).
+		if _, err := g.DB("master").Model("admin_data_source").Ctx(ctx).
 			Where("source_type = ?", ds.sourceType).
 			Data(g.Map{
 				"latest_sync": now,
 				"status":      statusVal,
 				"update_time": now,
-			}).Update()
+			}).Update(); err != nil {
+			consts.Logger.Warningf(ctx, "update data source status failed for %s: %v", ds.sourceType, err)
+		}
+
+		dlock.Release(ctx, lockKey)
 	}
 }
 
 func buildAidgpConfig() aidgp.Config {
-	qa := consts.Config.QaConfig
+	qa := consts.GetConfig().QaConfig
 	if qa == nil || qa.Sync == nil || qa.Sync.Aidgp == nil {
 		return aidgp.Config{}
 	}
 	a := qa.Sync.Aidgp
 	return aidgp.Config{
-		Provider:                 aidgp.ProviderAidgp,
+		Provider:                  aidgp.ProviderAidgp,
 		BaseUrl:                  a.BaseUrl,
 		AppKey:                   a.AppKey,
 		AppSecret:                a.AppSecret,

@@ -29,7 +29,6 @@ func (s *sMcpTool) TimestampToDateTime(ctx context.Context, request mcp.CallTool
 		err = errors.New("timestamp is empty")
 		return
 	}
-	gtime.NewFromTimeStamp(gconv.Int64(timestamp)).Format("Y-m-d H:i:s")
 	out = mcp.NewToolResultText(gjson.MustEncodeString(g.Map{
 		"datetime": gtime.NewFromTimeStamp(gconv.Int64(timestamp)).Format("Y-m-d H:i:s"),
 	}))

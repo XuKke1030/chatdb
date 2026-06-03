@@ -19,6 +19,8 @@ type (
 		HandlerResponse(r *ghttp.Request)
 		// AdminJwtAuth 校验管理员jwt，无效则返回401
 		AdminJwtAuth(r *ghttp.Request)
+		// RecoverPanic 捕获panic并记录日志
+		RecoverPanic(r *ghttp.Request)
 	}
 )
 

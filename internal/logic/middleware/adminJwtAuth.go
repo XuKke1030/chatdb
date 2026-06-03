@@ -4,7 +4,6 @@ import (
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
-	"context"
 	"strings"
 
 	"github.com/gogf/gf/v2/net/ghttp"
@@ -39,6 +38,6 @@ func (s *sMiddleware) AdminJwtAuth(r *ghttp.Request) {
 		return
 	}
 
-	r.SetCtx(context.WithValue(ctx, model.UserGroup{}, out.Id))
+	r.SetCtx(model.ContextWithUserId(ctx, out.Id))
 	r.Middleware.Next()
 }

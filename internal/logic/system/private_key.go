@@ -20,7 +20,7 @@ func init() {
 
 // Verify 验证私钥
 func (s *sPrivateKey) Verify(ctx context.Context, privateKey string) (err error) {
-	if privateKey != consts.PrivateKey {
+	if privateKey != consts.PrivateKeyValue() {
 		return code.ToError(code.PrivateKeyError)
 	}
 	return

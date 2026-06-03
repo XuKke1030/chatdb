@@ -69,20 +69,6 @@ func TestSafeUserErr_GenericError(t *testing.T) {
 	}
 }
 
-func TestSafeUserErr_RedisConnError(t *testing.T) {
-	got := SafeUserErr(errors.New("redis: connection refused"))
-	if !strings.Contains(got, "Redis") {
-		t.Fatalf("unexpected redis message: %s", got)
-	}
-}
-
-func TestSafeUserErr_RedisNil(t *testing.T) {
-	got := SafeUserErr(errors.New("redis nil result"))
-	if !strings.Contains(got, "Redis") {
-		t.Fatalf("unexpected redis nil message: %s", got)
-	}
-}
-
 func TestSafeUserErr_AccessDenied(t *testing.T) {
 	got := SafeUserErr(errors.New("access denied for user"))
 	if !strings.Contains(got, "权限不足") {

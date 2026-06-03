@@ -13,8 +13,18 @@ func (c *ControllerV1) AdminMetrics(ctx context.Context, req *v1.AdminMetricsReq
 	if err != nil {
 		return
 	}
-	list := make([]v1.AdminMetricItem, 0, len(items))
-	for _, it := range items {
+	total := len(items)
+	offset := (req.Page - 1) * req.PageSize
+	end := offset + req.PageSize
+	if offset > total {
+		offset = total
+	}
+	if end > total {
+		end = total
+	}
+	page := items[offset:end]
+	list := make([]v1.AdminMetricItem, 0, len(page))
+	for _, it := range page {
 		list = append(list, v1.AdminMetricItem{
 			ID:                 it.ID,
 			Topic:              it.Topic,
@@ -32,7 +42,7 @@ func (c *ControllerV1) AdminMetrics(ctx context.Context, req *v1.AdminMetricsReq
 			UpdateTime:         it.UpdateTime,
 		})
 	}
-	return &v1.AdminMetricsRes{List: list}, nil
+	return &v1.AdminMetricsRes{List: list, Total: total, Page: req.Page, PageSize: req.PageSize}, nil
 }
 
 func (c *ControllerV1) AdminMetricCreate(ctx context.Context, req *v1.AdminMetricCreateReq) (res *v1.AdminMetricCreateRes, err error) {

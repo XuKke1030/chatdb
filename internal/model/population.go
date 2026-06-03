@@ -1,11 +1,11 @@
 package model
 
 type PopulationAggregateQuery struct {
-	DateFrom string
-	DateTo   string
-	Region   string
-	GridName string
-	GroupBy  string // "hour", "day", "region"
+	DateFrom string `json:"dateFrom" dc:"起始日期 Y-m-d"`
+	DateTo   string `json:"dateTo"   dc:"截止日期 Y-m-d"`
+	Region   string `json:"region"   dc:"区域筛选"`
+	GridName string `json:"gridName" dc:"网格筛选"`
+	GroupBy  string `json:"groupBy"  dc:"分组方式：hour/day/region"`
 }
 
 type PopulationAggregateSummary struct {
@@ -37,13 +37,13 @@ type PopulationYoYItem struct {
 }
 
 type TagDistributionQuery struct {
-	DateFrom string   // Y-m-d
-	DateTo   string   // Y-m-d
-	AllDates bool     // true时不加日期限制
-	Tag      string   // 年龄/性别/省内城市来源/省外城市来源/省外来源
-	Type     int      // 0=不区分, 1=总, 2=进, 3=出
-	Area     string   // 区域筛选，空=全部
-	Labels   []string // 指定标签值筛选，空=全部
+	DateFrom string   `json:"dateFrom" dc:"起始日期 Y-m-d"`
+	DateTo   string   `json:"dateTo"   dc:"截止日期 Y-m-d"`
+	AllDates bool     `json:"allDates"  dc:"true时不加日期限制"`
+	Tag      string   `json:"tag"       dc:"标签类别"`
+	Type     int      `json:"type"      dc:"0=不区分, 1=总, 2=进, 3=出"`
+	Area     string   `json:"area"      dc:"区域筛选"`
+	Labels   []string `json:"labels"    dc:"指定标签值筛选"`
 }
 
 type TagDistributionItem struct {

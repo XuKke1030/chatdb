@@ -39,7 +39,7 @@ func (t *cachedMCPTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		consts.Logger.Errorf(ctx, "MCP tool %s received invalid JSON arguments: %q", t.info.Name, argumentsInJSON)
 		return "", fmt.Errorf("invalid JSON arguments for tool %s: %s", t.info.Name, argumentsInJSON)
 	}
-	result, err := consts.McpClient.CallTool(ctx, gMcp.CallToolRequest{
+	result, err := consts.McpClientInstance().CallTool(ctx, gMcp.CallToolRequest{
 		Request: gMcp.Request{
 			Method: "tools/call",
 		},
@@ -83,7 +83,7 @@ func getCachedMCPTools(ctx context.Context, handler func(ctx context.Context, na
 		return wrapMCPToolInfos(cachedMCPTools.infos, handler), nil
 	}
 
-	tools, err := mcpTool.GetTools(ctx, &mcpTool.Config{Cli: consts.McpClient})
+	tools, err := mcpTool.GetTools(ctx, &mcpTool.Config{Cli: consts.McpClientInstance()})
 	if err != nil {
 		return nil, err
 	}

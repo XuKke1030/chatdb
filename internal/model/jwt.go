@@ -1,5 +1,7 @@
 package model
 
+import "context"
+
 type JWTGenTokenInput struct {
 	Subject string `json:"subject"`
 	Id      int64  `json:"id"`
@@ -28,5 +30,13 @@ type JwtOption struct {
 	Subject string `json:"subject" dc:"主题"`
 }
 
-type UserGroup struct {
+type userGroupKey struct{}
+
+func UserIdFromContext(ctx context.Context) int {
+	v, _ := ctx.Value(userGroupKey{}).(int)
+	return v
+}
+
+func ContextWithUserId(ctx context.Context, id int) context.Context {
+	return context.WithValue(ctx, userGroupKey{}, id)
 }

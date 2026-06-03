@@ -19,7 +19,6 @@ import (
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/net/ghttp"
-	"github.com/gogf/gf/v2/util/gconv"
 )
 
 const maxSpeechUploadBytes int64 = 10 * 1024 * 1024
@@ -35,8 +34,8 @@ var allowedSpeechExt = map[string]bool{
 
 func (c *ControllerV1) SpeechTranscribe(ctx context.Context, req *v1.SpeechTranscribeReq) (res *v1.SpeechTranscribeRes, err error) {
 	userId := 0
-	if userIdVal := ctx.Value(model.UserGroup{}); userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal := model.UserIdFromContext(ctx); userIdVal != 0 {
+		userId = userIdVal
 	}
 	if req.Topic != "" && userId > 0 {
 		user, userErr := service.User().GetUserInfoById(ctx, int64(userId))
@@ -157,17 +156,17 @@ func transcribeWithOpenAICompatibleASR(ctx context.Context, fileName string, con
 }
 
 func resolveASRConfig() (baseURL string, apiKey string, modelName string) {
-	if consts.Config != nil && consts.Config.AiConfig != nil {
-		if consts.Config.AiConfig.Asr != nil {
-			baseURL = consts.Config.AiConfig.Asr.BaseUrl
-			apiKey = consts.Config.AiConfig.Asr.Key
-			modelName = consts.Config.AiConfig.Asr.Model
+	if consts.GetConfig() != nil && consts.GetConfig().AiConfig != nil {
+		if consts.GetConfig().AiConfig.Asr != nil {
+			baseURL = consts.GetConfig().AiConfig.Asr.BaseUrl
+			apiKey = consts.GetConfig().AiConfig.Asr.Key
+			modelName = consts.GetConfig().AiConfig.Asr.Model
 		}
-		if baseURL == "" && consts.Config.AiConfig.OpenAI != nil {
-			baseURL = consts.Config.AiConfig.OpenAI.BaseUrl
+		if baseURL == "" && consts.GetConfig().AiConfig.OpenAI != nil {
+			baseURL = consts.GetConfig().AiConfig.OpenAI.BaseUrl
 		}
-		if apiKey == "" && consts.Config.AiConfig.OpenAI != nil {
-			apiKey = consts.Config.AiConfig.OpenAI.Key
+		if apiKey == "" && consts.GetConfig().AiConfig.OpenAI != nil {
+			apiKey = consts.GetConfig().AiConfig.OpenAI.Key
 		}
 	}
 	return

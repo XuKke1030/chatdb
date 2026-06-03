@@ -14,7 +14,7 @@ import (
 const permissionSyncStateKey = "uiap_permission_updated_after"
 
 func ConfigFromSystem() Config {
-	cfg := consts.Config.Uiap
+	cfg := consts.GetConfig().Uiap
 	if cfg == nil {
 		return Config{}
 	}
@@ -43,11 +43,11 @@ func StartPermissionPoller(ctx context.Context) {
 	if !ok {
 		return
 	}
-	interval := consts.Config.Uiap.PermissionPollIntervalSeconds
+	interval := consts.GetConfig().Uiap.PermissionPollIntervalSeconds
 	if interval <= 0 {
 		interval = 300
 	}
-	pageSize := consts.Config.Uiap.PermissionPollPageSize
+	pageSize := consts.GetConfig().Uiap.PermissionPollPageSize
 	if pageSize <= 0 {
 		pageSize = 500
 	}

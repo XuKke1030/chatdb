@@ -21,7 +21,6 @@ import (
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/net/ghttp"
 	"github.com/gogf/gf/v2/os/gtime"
-	"github.com/gogf/gf/v2/util/gconv"
 )
 
 // topicPermissionMap 主题权限位掩码映射
@@ -55,10 +54,10 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 	}()
 
 	// 获取用户ID和权限
-	userIdVal := ctx.Value(model.UserGroup{})
+	userIdVal := model.UserIdFromContext(ctx)
 	userId := 0
-	if userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal != 0 {
+		userId = userIdVal
 	}
 	username := usernameByUserId(ctx, userId)
 	logStage("identity")
@@ -202,7 +201,6 @@ func (c *ControllerV1) Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatR
 			r.Response.Flush()
 		}
 	}
-	return
 }
 
 func askNumberBusinessError(err error) string {
@@ -210,10 +208,10 @@ func askNumberBusinessError(err error) string {
 }
 
 func (c *ControllerV1) ChatSessionCreate(ctx context.Context, req *v1.ChatSessionCreateReq) (res *v1.ChatSessionCreateRes, err error) {
-	userIdVal := ctx.Value(model.UserGroup{})
+	userIdVal := model.UserIdFromContext(ctx)
 	userId := 0
-	if userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal != 0 {
+		userId = userIdVal
 	}
 	topic := strings.ToLower(strings.TrimSpace(req.Topic))
 	if !isKnownAskNumberTopic(topic) {
@@ -237,16 +235,16 @@ func (c *ControllerV1) ChatSessionCreate(ctx context.Context, req *v1.ChatSessio
 		SessionId:          sessionId,
 		Topic:              topic,
 		Title:              topicSessionTitle(topic),
-		SuggestedQuestions: suggestedQuestionsForTopic(topic),
+		SuggestedQuestions: suggestedQuestionsForTopic(ctx, topic),
 		InputPlaceholder:   inputPlaceholderForTopic(topic),
 	}, nil
 }
 
 func (c *ControllerV1) ChatSessionReset(ctx context.Context, req *v1.ChatSessionResetReq) (res *v1.ChatSessionResetRes, err error) {
-	userIdVal := ctx.Value(model.UserGroup{})
+	userIdVal := model.UserIdFromContext(ctx)
 	userId := 0
-	if userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal != 0 {
+		userId = userIdVal
 	}
 	if userId <= 0 {
 		return nil, gerror.New("用户未登录")
@@ -261,15 +259,15 @@ func (c *ControllerV1) ChatSessionReset(ctx context.Context, req *v1.ChatSession
 		return nil, gerror.New("会话不存在或无权操作")
 	}
 	now := int(gtime.Timestamp())
-	if _, err = g.DB("master").Model("ask_number_message").Ctx(ctx).
-		Where("session_id = ? AND user_id = ?", req.SessionId, userId).
-		Delete(); err != nil {
-		return nil, err
-	}
-	if _, err = g.DB("master").Model("ask_number_session").Ctx(ctx).
-		Where("session_id = ? AND user_id = ?", req.SessionId, userId).
-		Data(g.Map{"status": "reset", "update_time": now}).
-		Update(); err != nil {
+	err = g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec("DELETE FROM ask_number_message WHERE session_id = ? AND user_id = ?", req.SessionId, userId); err != nil {
+			return err
+		}
+		_, err := tx.Exec("UPDATE ask_number_session SET status = ?, update_time = ? WHERE session_id = ? AND user_id = ?",
+			"reset", now, req.SessionId, userId)
+		return err
+	})
+	if err != nil {
 		return nil, err
 	}
 	return &v1.ChatSessionResetRes{SessionId: req.SessionId}, nil
@@ -297,10 +295,10 @@ func (c *ControllerV1) ExampleQuestions(ctx context.Context, req *v1.ExampleQues
 }
 
 func (c *ControllerV1) GridMajorCaseAnalysis(ctx context.Context, req *v1.GridMajorCaseAnalysisReq) (res *v1.GridMajorCaseAnalysisRes, err error) {
-	userIdVal := ctx.Value(model.UserGroup{})
+	userIdVal := model.UserIdFromContext(ctx)
 	userId := 0
-	if userIdVal != nil {
-		userId = gconv.Int(userIdVal)
+	if userIdVal != 0 {
+		userId = userIdVal
 	}
 	if userId > 0 {
 		user, userErr := service.User().GetUserInfoById(ctx, int64(userId))
@@ -433,22 +431,15 @@ func appendAskNumberMessage(ctx context.Context, userId int, sessionId string, t
 		return nil
 	}
 	now := int(gtime.Timestamp())
-	_, err := g.DB("master").Model("ask_number_message").Ctx(ctx).Data(g.Map{
-		"session_id":  sessionId,
-		"user_id":     userId,
-		"topic":       topic,
-		"role":        role,
-		"content":     content,
-		"create_time": now,
-	}).Insert()
-	if err != nil {
+	return g.DB("master").Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		if _, err := tx.Exec(`INSERT INTO ask_number_message (session_id, user_id, topic, role, content, create_time) VALUES (?, ?, ?, ?, ?, ?)`,
+			sessionId, userId, topic, role, content, now); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`UPDATE ask_number_session SET update_time = ? WHERE session_id = ? AND user_id = ?`,
+			now, sessionId, userId)
 		return err
-	}
-	_, err = g.DB("master").Model("ask_number_session").Ctx(ctx).
-		Where("session_id = ? AND user_id = ?", sessionId, userId).
-		Data(g.Map{"update_time": now}).
-		Update()
-	return err
+	})
 }
 
 func mergeChatHistory(stored []model.ChatHistoryItem, client []model.ChatHistoryItem) []model.ChatHistoryItem {
@@ -541,34 +532,12 @@ func upsertAskNumberQuestionStat(ctx context.Context, userId int, topic, questio
 	if normalized == "" {
 		return nil
 	}
-	db := g.DB("master")
-	record, err := db.Model("ask_number_question_stat").Ctx(ctx).
-		Fields("id, hit_count").
-		Where("user_id = ? AND topic = ? AND question_normalized = ?", userId, topic, normalized).
-		One()
-	if err != nil {
-		return err
-	}
 	now := int(gtime.Timestamp())
-	if record == nil {
-		_, err = db.Model("ask_number_question_stat").Ctx(ctx).Data(g.Map{
-			"user_id":             userId,
-			"topic":               topic,
-			"question_normalized": normalized,
-			"hit_count":           1,
-			"last_asked_at":       now,
-			"create_time":         now,
-			"update_time":         now,
-		}).Insert()
-		return err
-	}
-	_, err = db.Model("ask_number_question_stat").Ctx(ctx).
-		Where("id = ?", record["id"].Int64()).
-		Data(g.Map{
-			"hit_count":     record["hit_count"].Int() + 1,
-			"last_asked_at": now,
-			"update_time":   now,
-		}).Update()
+	_, err := g.DB("master").Exec(ctx, `
+INSERT INTO ask_number_question_stat (user_id, topic, question_normalized, hit_count, last_asked_at, create_time, update_time)
+VALUES (?, ?, ?, 1, ?, ?, ?)
+ON DUPLICATE KEY UPDATE hit_count = hit_count + 1, last_asked_at = VALUES(last_asked_at), update_time = VALUES(update_time)`,
+		userId, topic, normalized, now, now, now)
 	return err
 }
 
@@ -590,8 +559,7 @@ func topicSessionTitle(topic string) string {
 	}
 }
 
-func suggestedQuestionsForTopic(topic string) []string {
-	ctx := context.Background()
+func suggestedQuestionsForTopic(ctx context.Context, topic string) []string {
 	records, err := g.DB("master").Model("admin_example_question").Ctx(ctx).
 		Where("enabled", 1).Where("topic", topic).
 		OrderAsc("sort").OrderDesc("update_time").All()
@@ -647,10 +615,11 @@ community AS responsibility_unit,
 grid_name AS case_location,
 case_title AS description`)
 	}
+	query = query.Where("report_time >= ?", gtime.Now().AddDate(0, 0, -30).StartOfDay().Unix())
 	if strings.TrimSpace(region) != "" {
-		query = query.WhereLike("region", "%"+strings.TrimSpace(region)+"%")
+		query = query.WhereLike("region", "%"+utility.EscapeLike(strings.TrimSpace(region))+"%")
 	}
-	records, err := query.OrderDesc("id").All()
+	records, err := query.OrderDesc("id").Limit(500).All()
 	if err != nil {
 		return nil, err
 	}
@@ -1033,12 +1002,14 @@ func insertSystemQueryLog(ctx context.Context, username string, topic string, me
 	if topic != "" {
 		actionType = "问数查询"
 	}
-	_, _ = g.DB("master").Model("admin_operation_log").Ctx(ctx).Data(g.Map{
+	if _, err := g.DB("master").Model("admin_operation_log").Ctx(ctx).Data(g.Map{
 		"log_type":    "system",
 		"username":    username,
 		"action_type": actionType,
 		"content":     message,
 		"result":      result,
 		"create_time": int(gtime.Timestamp()),
-	}).Insert()
+	}).Insert(); err != nil {
+		consts.Logger.Warningf(ctx, "insertSystemQueryLog failed: %v", err)
+	}
 }

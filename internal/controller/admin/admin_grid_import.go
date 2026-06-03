@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	v1 "ai-chat-sql/api/admin/v1"
+	"ai-chat-sql/api/admin/v1"
+	"ai-chat-sql/internal/consts"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -122,13 +123,15 @@ func (c *ControllerV1) AdminGridImportRollback(ctx context.Context, req *v1.Admi
 	}
 
 	op := defaultString(req.Operator, "admin")
-	_, _ = g.DB("master").Model("admin_grid_import_audit").Ctx(ctx).Data(g.Map{
+	if _, err := g.DB("master").Model("admin_grid_import_audit").Ctx(ctx).Data(g.Map{
 		"import_id":   req.Id,
 		"action":      "rollback",
 		"operator":    op,
 		"detail":      fmt.Sprintf("回滚删除 %d 条案件记录", deletedCount),
 		"create_time": now,
-	}).Insert()
+	}).Insert(); err != nil {
+		consts.Logger.Warningf(ctx, "insert rollback audit log failed: %v", err)
+	}
 
 	_ = insertAdminLog(ctx, "admin", op, "数据导入回滚", fmt.Sprintf("回滚导入ID %d，删除 %d 条", req.Id, deletedCount), "success")
 

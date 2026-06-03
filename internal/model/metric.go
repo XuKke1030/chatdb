@@ -20,9 +20,9 @@ type MetricCatalogItem struct {
 }
 
 type MetricCatalogCreate struct {
-	Topic              string   `json:"topic" v:"required"`
-	MetricName         string   `json:"metricName" v:"required"`
-	DisplayName        string   `json:"displayName" v:"required"`
+	Topic              string   `json:"topic" v:"required#请输入主题"`
+	MetricName         string   `json:"metricName" v:"required#请输入指标名"`
+	DisplayName        string   `json:"displayName" v:"required#请输入显示名称"`
 	Description        string   `json:"description"`
 	Unit               string   `json:"unit"`
 	Dimensions         []string `json:"dimensions"`

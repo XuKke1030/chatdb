@@ -32,10 +32,10 @@ func init() {
 		}
 		fmt.Printf("\n––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––\n")
 
-		fmt.Printf("MCP SSE服务已启动地址: http://%s/sse\n", consts.Config.AiConfig.Mcp.Address)
+		fmt.Printf("MCP SSE服务已启动地址: http://%s/sse\n", consts.GetConfig().AiConfig.Mcp.Address)
 
 		// Start the stdio server
-		if err := server.NewSSEServer(s).Start(consts.Config.AiConfig.Mcp.Address); err != nil {
+		if err := server.NewSSEServer(s).Start(consts.GetConfig().AiConfig.Mcp.Address); err != nil {
 			panic(err)
 		}
 	}, func(ctx context.Context, exception error) {

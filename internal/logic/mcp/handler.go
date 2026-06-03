@@ -5,6 +5,7 @@ import (
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
 	"context"
+	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -26,11 +27,11 @@ func (s *sMcpHandler) GetList() []model.McpReg {
 	return []model.McpReg{
 		{
 			Name:        "RunSafeShellCommand",
-			Description: "Execute a terminal command safely with blacklist, operator bans and timeout; supports limited pipes (|)",
+			Description: "Execute a read-only terminal command safely with allowlist and timeout; no pipes/redirects/chaining",
 			ToolOptions: []mcp.ToolOption{
 				mcp.WithString("command",
 					mcp.Required(),
-					mcp.Description("The terminal command to execute (supports up to 3 pipes, no redirects/logic ops)"),
+					mcp.Description("The terminal command to execute (single command only, no pipes or redirects)"),
 				),
 				mcp.WithString("timeoutSeconds",
 					mcp.Description("Timeout seconds (default 10, max 60)"),
@@ -163,20 +164,6 @@ func (s *sMcpHandler) GetList() []model.McpReg {
 			Fn: service.McpTool().GetDatabaseInfo,
 		},
 		{
-			Name:        "ExecRedisCommand",
-			Description: "Execute a Redis command and return the result",
-			ToolOptions: []mcp.ToolOption{
-				mcp.WithString("command",
-					mcp.Required(),
-					mcp.Description("The Redis command to execute (e.g., 'GET', 'SET', 'HGETALL', 'KEYS')"),
-				),
-				mcp.WithString("args",
-					mcp.Description("Command arguments as JSON array (e.g., '[\"key\"]', '[\"key\", \"value\"]')"),
-				),
-			},
-			Fn: service.McpTool().ExecRedisCommand,
-		},
-		{
 			Name:        "ExportToExcel",
 			Description: "Export query results or data to an Excel file (.xlsx format) and return the download URL",
 			ToolOptions: []mcp.ToolOption{
@@ -224,8 +211,10 @@ func (s *sMcpHandler) GetList() []model.McpReg {
 func (s *sMcpHandler) GetMcpFn(item *model.McpReg) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (result *mcp.CallToolResult, err error) {
 		defer func() {
-			if err := recover(); err != nil {
-				consts.Logger.Printf(ctx, "panic error %+v", err)
+			if r := recover(); r != nil {
+				consts.Logger.Printf(ctx, "panic error %+v", r)
+				result = nil
+				err = fmt.Errorf("tool %s panic: %v", item.Name, r)
 			}
 		}()
 		consts.Logger.Printf(ctx, "使用工具 %s 请求内容 %+v", item.Name, request.Params.Arguments)

@@ -8,7 +8,6 @@ type ConfigData struct {
 	Jwt      []*JwtOption   `json:"jwt" dc:"JWT config"`
 	DbConfig *DbConfig      `json:"db" dc:"database config"`
 	Traffic  *TrafficConfig `json:"traffic"`
-	Redis    *RedisConfig   `json:"redis" dc:"Redis cache config"`
 	Sync     *SyncConfig    `json:"sync" dc:"Sync scheduler config"`
 }
 
@@ -127,11 +126,6 @@ type TrafficIngestConfig struct {
 	NoDataWarnMinutes    int `json:"noDataWarnMinutes"`
 }
 
-type RedisConfig struct {
-	Address  string `json:"address" dc:"Redis address"`
-	Password string `json:"password" dc:"Redis password"`
-	Db       int    `json:"db" dc:"Redis database number"`
-}
 
 type SyncConfig struct {
 	IntervalSeconds int `json:"intervalSeconds" dc:"sync interval in seconds, default 1800"`

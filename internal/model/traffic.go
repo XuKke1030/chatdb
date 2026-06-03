@@ -3,80 +3,80 @@ package model
 import "time"
 
 type TrafficGateRecordInput struct {
-	DeviceId         string
-	DeviceName       string
-	CameraIp         string
-	PlateChar        string
-	PlateNormalized  string
-	PlateType        string
-	PlateColor       string
-	VehicleType      string
-	VehicleTypeExt   string
-	VehicleColor     string
-	VehicleSpeed     int
-	InDir            int
-	VehicleDir       string
-	CarDrvDir        string
-	LaneId           int
-	LaneDesc         string
-	LaneDirDesc      string
-	SnapshotTime     time.Time
-	CollectTime      time.Time
-	SourceInsertTime time.Time
-	PlatePicture     string
-	PanoramaPicture  string
-	VehiclePicture   string
-	CarPreBrand      string
-	CarSubBrand      string
-	CarYearBrand     string
-	PlateOrigin      string
-	PlateRegionType  string
-	IsHkMacau        bool
-	IsProvinceInside bool
-	RawPayload       string
-	PayloadHash      string
+	DeviceId         string    `json:"deviceId"         dc:"设备ID"`
+	DeviceName       string    `json:"deviceName"       dc:"设备名称"`
+	CameraIp         string    `json:"cameraIp"         dc:"摄像头IP"`
+	PlateChar        string    `json:"plateChar"        dc:"原始车牌"`
+	PlateNormalized  string    `json:"plateNormalized"  dc:"标准化车牌"`
+	PlateType        string    `json:"plateType"        dc:"车牌类型"`
+	PlateColor       string    `json:"plateColor"       dc:"车牌颜色"`
+	VehicleType      string    `json:"vehicleType"      dc:"车辆类型"`
+	VehicleTypeExt   string    `json:"vehicleTypeExt"   dc:"车辆扩展类型"`
+	VehicleColor     string    `json:"vehicleColor"     dc:"车身颜色"`
+	VehicleSpeed     int       `json:"vehicleSpeed"     dc:"车速"`
+	InDir            int       `json:"inDir"            dc:"进方向"`
+	VehicleDir       string    `json:"vehicleDir"       dc:"车辆方向"`
+	CarDrvDir        string    `json:"carDrvDir"        dc:"行驶方向"`
+	LaneId           int       `json:"laneId"           dc:"车道ID"`
+	LaneDesc         string    `json:"laneDesc"         dc:"车道描述"`
+	LaneDirDesc      string    `json:"laneDirDesc"      dc:"车道方向描述"`
+	SnapshotTime     time.Time `json:"snapshotTime"     dc:"抓拍时间"`
+	CollectTime      time.Time `json:"collectTime"      dc:"采集时间"`
+	SourceInsertTime time.Time `json:"sourceInsertTime" dc:"源入库时间"`
+	PlatePicture     string    `json:"platePicture"     dc:"车牌图片"`
+	PanoramaPicture  string    `json:"panoramaPicture"  dc:"全景图片"`
+	VehiclePicture   string    `json:"vehiclePicture"   dc:"车辆图片"`
+	CarPreBrand      string    `json:"carPreBrand"      dc:"品牌"`
+	CarSubBrand      string    `json:"carSubBrand"      dc:"子品牌"`
+	CarYearBrand     string    `json:"carYearBrand"     dc:"年款"`
+	PlateOrigin      string    `json:"plateOrigin"      dc:"车牌来源地"`
+	PlateRegionType  string    `json:"plateRegionType"  dc:"车牌区域类型"`
+	IsHkMacau        bool      `json:"isHkMacau"        dc:"是否港澳车"`
+	IsProvinceInside bool      `json:"isProvinceInside" dc:"是否省内车"`
+	RawPayload       string    `json:"rawPayload"       dc:"原始载荷"`
+	PayloadHash      string    `json:"payloadHash"      dc:"载荷哈希"`
 }
 
 type TrafficGateDeviceInput struct {
-	DeviceId         string
-	DeviceSn         string
-	DeviceName       string
-	Category         string
-	Model            string
-	ConnectionStatus string
-	WorkStatus       string
-	Region           string
-	Address          string
-	Longitude        float64
-	Latitude         float64
-	OwnerName        string
-	OwnerPhone       string
-	Enabled          bool
-	LatestSeenAt     time.Time
-	LastReportedAt   time.Time
-	DeviceCreatedAt  time.Time
-	Remark           string
+	DeviceId         string    `json:"deviceId"         dc:"设备ID"`
+	DeviceSn         string    `json:"deviceSn"         dc:"设备序列号"`
+	DeviceName       string    `json:"deviceName"       dc:"设备名称"`
+	Category         string    `json:"category"         dc:"设备分类"`
+	Model            string    `json:"model"             dc:"设备型号"`
+	ConnectionStatus string    `json:"connectionStatus" dc:"连接状态"`
+	WorkStatus       string    `json:"workStatus"       dc:"工作状态"`
+	Region           string    `json:"region"            dc:"所属区域"`
+	Address          string    `json:"address"           dc:"安装地址"`
+	Longitude        float64   `json:"longitude"         dc:"经度"`
+	Latitude         float64   `json:"latitude"          dc:"纬度"`
+	OwnerName        string    `json:"ownerName"         dc:"归属人姓名"`
+	OwnerPhone       string    `json:"ownerPhone"        dc:"归属人电话"`
+	Enabled          bool      `json:"enabled"           dc:"是否启用"`
+	LatestSeenAt     time.Time `json:"latestSeenAt"      dc:"最近在线时间"`
+	LastReportedAt   time.Time `json:"lastReportedAt"    dc:"最后上报时间"`
+	DeviceCreatedAt  time.Time `json:"deviceCreatedAt"  dc:"设备创建时间"`
+	Remark           string    `json:"remark"            dc:"备注"`
 }
 
 type TrafficIngestLogInput struct {
-	Source      string
-	Topic       string
-	Status      string
-	Message     string
-	DeviceId    string
-	PayloadHash string
-	RawPayload  string
+	Source      string `json:"source"      dc:"来源"`
+	Topic       string `json:"topic"       dc:"主题"`
+	Status      string `json:"status"      dc:"状态"`
+	Message     string `json:"message"     dc:"消息"`
+	DeviceId    string `json:"deviceId"     dc:"设备ID"`
+	PayloadHash string `json:"payloadHash" dc:"载荷哈希"`
+	RawPayload  string `json:"rawPayload"  dc:"原始载荷"`
 }
 
 type TrafficIngestStatusInput struct {
-	Source           string
-	Enabled          bool
-	Connected        bool
-	Topic            string
-	LatestReceivedAt time.Time
-	TodayReceived    int
-	LatestError      string
-	IncrementToday   bool
+	Source           string    `json:"source"          dc:"来源"`
+	Enabled          bool      `json:"enabled"          dc:"是否启用"`
+	Connected        bool      `json:"connected"        dc:"是否已连接"`
+	Topic            string    `json:"topic"            dc:"订阅主题"`
+	LatestReceivedAt time.Time `json:"latestReceivedAt" dc:"最近接收时间"`
+	TodayReceived    int       `json:"todayReceived"    dc:"今日接收数"`
+	LatestError      string    `json:"latestError"      dc:"最近错误"`
+	IncrementToday   bool      `json:"incrementToday"   dc:"今日是否有增量"`
 }
 
 type TrafficPlateRecognition struct {
@@ -94,14 +94,14 @@ type TrafficPlateRecognition struct {
 }
 
 type TrafficAggregateQuery struct {
-	DateFrom    string
-	DateTo      string
-	DeviceId    string
-	Plate       string
-	GroupBy     string
-	Holiday     string
-	GateName    string // 卡口名称过滤
-	PlateRegion string // 区域名称过滤
+	DateFrom    string `json:"dateFrom"    dc:"起始日期 Y-m-d"`
+	DateTo      string `json:"dateTo"      dc:"截止日期 Y-m-d"`
+	DeviceId    string `json:"deviceId"    dc:"设备ID"`
+	Plate       string `json:"plate"       dc:"车牌号"`
+	GroupBy     string `json:"groupBy"     dc:"分组方式：hour/day/device"`
+	Holiday     string `json:"holiday"     dc:"节假日筛选：holiday/workday"`
+	GateName    string `json:"gateName"    dc:"卡口名称过滤"`
+	PlateRegion string `json:"plateRegion" dc:"区域名称过滤"`
 }
 
 type TrafficAggregateSummary struct {
@@ -134,13 +134,13 @@ type TrafficAggregateResult struct {
 }
 
 type TrafficRecordQuery struct {
-	DateFrom  string
-	DateTo    string
-	DeviceId  string
-	Plate     string
-	IsHkMacau string
-	Page      int
-	PageSize  int
+	DateFrom  string `json:"dateFrom"  dc:"起始日期 Y-m-d"`
+	DateTo    string `json:"dateTo"    dc:"截止日期 Y-m-d"`
+	DeviceId  string `json:"deviceId"  dc:"设备ID"`
+	Plate     string `json:"plate"     dc:"车牌号"`
+	IsHkMacau string `json:"isHkMacau" dc:"是否港澳车"`
+	Page      int    `json:"page"      dc:"页码"`
+	PageSize  int    `json:"pageSize"  dc:"每页条数"`
 }
 
 type TrafficRecordItem struct {
@@ -182,8 +182,8 @@ type TrafficRecordListResult struct {
 }
 
 type TrafficDeviceQuery struct {
-	Enabled string
-	Keyword string
+	Enabled string `json:"enabled" dc:"启用状态筛选"`
+	Keyword string `json:"keyword" dc:"搜索关键词"`
 }
 
 type TrafficDeviceItem struct {

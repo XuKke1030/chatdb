@@ -8,6 +8,7 @@ import (
 	"ai-chat-sql/internal/controller/traffic"
 	"ai-chat-sql/internal/controller/user"
 	"ai-chat-sql/internal/logic/precipitate"
+	"ai-chat-sql/internal/logic/dlock"
 	"ai-chat-sql/internal/logic/sync"
 	"ai-chat-sql/internal/logic/uiap"
 	"ai-chat-sql/internal/packed"
@@ -87,14 +88,17 @@ var (
 			if err = service.SystemInit().InitDB(ctx); err != nil {
 				return err
 			}
+			if err = dlock.EnsureTable(ctx); err != nil {
+				consts.Logger.Warningf(ctx, "ensure distributed_lock table: %v", err)
+			}
 			go service.Population().RefreshAggregates(ctx, "2020-01-01", gtime.Now().AddDate(1, 0, 0).Format("Y-m-d"))
 			service.Traffic().StartMqttSubscriber(ctx)
 			uiap.StartPermissionPoller(ctx)
-	sync.StartScheduler(ctx)
+			go sync.StartScheduler(ctx)
 			go precipitate.StartCandidateScanner(ctx, 10*time.Minute, 3)
 			s := g.Server()
 			s.Group("/api/v1", func(group *ghttp.RouterGroup) {
-				group.Middleware(service.Middleware().RequestMetrics, service.Middleware().HandlerResponse, corsMiddleware)
+				group.Middleware(service.Middleware().RecoverPanic, service.Middleware().RequestMetrics, service.Middleware().HandlerResponse, corsMiddleware)
 
 				{
 					authGroup := group.Clone()

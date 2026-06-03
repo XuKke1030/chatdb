@@ -37,6 +37,12 @@ func (c *ControllerV1) ExportDownload(ctx context.Context, req *v1.ExportDownloa
 	}
 	filePath := filepath.Join(exportDir, fileName)
 
+	// 确保最终路径仍在导出目录内
+	absPath, err := filepath.Abs(filePath)
+	if err != nil || !strings.HasPrefix(absPath, exportDir+string(filepath.Separator)) {
+		return nil, fmt.Errorf("invalid file path")
+	}
+
 	// 检查文件是否存在
 	if _, err = os.Stat(filePath); err != nil {
 		if os.IsNotExist(err) {

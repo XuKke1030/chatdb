@@ -83,7 +83,7 @@ func (s *sMcpTool) ExecSql(ctx context.Context, request mcp.CallToolRequest) (ou
 
 	// 记录查询表名到context（供SSE推送数据来源）
 	for _, t := range extractTableNames(sql) {
-		addTableToContext(ctx, t)
+		AddTableToContext(ctx, t)
 	}
 
 	// 在返回结果中包含执行的 SQL 语句信息
@@ -369,20 +369,9 @@ func ExtractTableNames(text string) []string {
 	return extractTableNames(text)
 }
 
-// AddTable 向累加器添加表名（去重）
-func AddTable(tables *[]string, table string) {
-	if tables == nil {
-		return
-	}
-	for _, t := range *tables {
-		if t == table {
-			return
-		}
-	}
-	*tables = append(*tables, table)
-}
-
 type ctxKeyTables struct{}
+
+type ctxKeySessionID struct{}
 
 // sessionTables 用 sessionID 做 key，避免 eino 内部 context 派生丢值
 var sessionTables sync.Map // map[string]*[]string
@@ -404,8 +393,8 @@ func TablesFromContext(ctx context.Context) *[]string {
 	return nil
 }
 
-func addTableToContext(ctx context.Context, table string) {
-	consts.Logger.Infof(ctx, "perf addTable table=%s sidFromCtx=%v", table, ctx.Value("sessionId"))
+func AddTableToContext(ctx context.Context, table string) {
+	consts.Logger.Infof(ctx, "perf addTable table=%s sidFromCtx=%v", table, ctx.Value(ctxKeySessionID{}))
 	if v := TablesFromContext(ctx); v != nil {
 		for _, t := range *v {
 			if t == table {
@@ -420,12 +409,16 @@ func addTableToContext(ctx context.Context, table string) {
 }
 
 func sessionIdFromCtx(ctx context.Context) string {
-	if v := ctx.Value("sessionId"); v != nil {
+	if v := ctx.Value(ctxKeySessionID{}); v != nil {
 		if s, ok := v.(string); ok {
 			return s
 		}
 	}
 	return "unknown"
+}
+
+func ContextWithSessionID(ctx context.Context, sid string) context.Context {
+	return context.WithValue(ctx, ctxKeySessionID{}, sid)
 }
 
 // extractTableNames 从SQL语句中提取表名

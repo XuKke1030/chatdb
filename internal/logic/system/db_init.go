@@ -24,7 +24,9 @@ func (s *sSystemInit) InitDB(ctx context.Context) error {
 		return fmt.Errorf("admin table init failed: %w", err)
 	}
 	admin.MigrateAdminTables(ctx, db)
-	_, _ = db.Exec(ctx, "ALTER TABLE admin_grid_import_error MODIFY COLUMN raw_data LONGTEXT")
+	if _, err := db.Exec(ctx, "ALTER TABLE admin_grid_import_error MODIFY COLUMN raw_data LONGTEXT"); err != nil {
+		g.Log().Warningf(ctx, "db_init: alter raw_data to LONGTEXT failed: %v", err)
+	}
 
 	if err := qa.CreateQaTables(ctx, db); err != nil {
 		return fmt.Errorf("qa table init failed: %w", err)

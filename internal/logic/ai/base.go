@@ -63,23 +63,23 @@ func (s *sAI) GetChatModel(ai, model string) (chatModel einoModel.ToolCallingCha
 func (s *sAI) createChatModel(ai, model string) (chatModel einoModel.ToolCallingChatModel, err error) {
 	switch ai {
 	case "openai":
-		if err = validateAIProviderConfig("openai", consts.Config.AiConfig.OpenAI.BaseUrl, consts.Config.AiConfig.OpenAI.Key); err != nil {
+		if err = validateAIProviderConfig("openai", consts.GetConfig().AiConfig.OpenAI.BaseUrl, consts.GetConfig().AiConfig.OpenAI.Key); err != nil {
 			return
 		}
 		chatModel, err = openai.NewChatModel(consts.Ctx, &openai.ChatModelConfig{
-			BaseURL: consts.Config.AiConfig.OpenAI.BaseUrl,
+			BaseURL: consts.GetConfig().AiConfig.OpenAI.BaseUrl,
 			Model:   model,
-			APIKey:  consts.Config.AiConfig.OpenAI.Key,
+			APIKey:  consts.GetConfig().AiConfig.OpenAI.Key,
 		})
 		return
 	case "deepseek":
-		if err = validateAIProviderConfig("deepseek", consts.Config.AiConfig.DeepSeek.BaseUrl, consts.Config.AiConfig.DeepSeek.Key); err != nil {
+		if err = validateAIProviderConfig("deepseek", consts.GetConfig().AiConfig.DeepSeek.BaseUrl, consts.GetConfig().AiConfig.DeepSeek.Key); err != nil {
 			return
 		}
 		chatModel, err = deepseek.NewChatModel(consts.Ctx, &deepseek.ChatModelConfig{
-			BaseURL: consts.Config.AiConfig.DeepSeek.BaseUrl,
+			BaseURL: consts.GetConfig().AiConfig.DeepSeek.BaseUrl,
 			Model:   model,
-			APIKey:  consts.Config.AiConfig.DeepSeek.Key,
+			APIKey:  consts.GetConfig().AiConfig.DeepSeek.Key,
 		})
 		return
 	}
@@ -95,11 +95,11 @@ func (s *sAI) GetChatModeListJson(ctx context.Context, ai string) (json string, 
 	)
 	switch ai {
 	case "openai":
-		url = consts.Config.AiConfig.OpenAI.BaseUrl
-		key = consts.Config.AiConfig.OpenAI.Key
+		url = consts.GetConfig().AiConfig.OpenAI.BaseUrl
+		key = consts.GetConfig().AiConfig.OpenAI.Key
 	case "deepseek":
-		url = consts.Config.AiConfig.DeepSeek.BaseUrl
-		key = consts.Config.AiConfig.DeepSeek.Key
+		url = consts.GetConfig().AiConfig.DeepSeek.BaseUrl
+		key = consts.GetConfig().AiConfig.DeepSeek.Key
 	default:
 		err = errors.New("未知的操作")
 		return

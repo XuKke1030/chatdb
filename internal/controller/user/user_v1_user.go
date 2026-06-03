@@ -27,22 +27,28 @@ func (c *ControllerV1) UserLogin(ctx context.Context, req *v1.UserLoginReq) (res
 	err = gconv.Scan(user, &res.User)
 	res.RuleLevel = effectiveRuleLevel(ctx, int64(res.UserId), user.RuleLevel)
 	now := int(gtime.Timestamp())
-	_, _ = g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", res.UserId).Data(g.Map{
+	if _, err := g.DB("master").Model("user").Ctx(ctx).Where("user_id = ?", res.UserId).Data(g.Map{
 		"last_login_tme": now,
 		"update_time":    now,
-	}).Update()
-	_, _ = g.DB("master").Model("admin_user_profile").Ctx(ctx).Where("user_id = ?", res.UserId).Data(g.Map{
+	}).Update(); err != nil {
+		consts.Logger.Warningf(ctx, "update user last_login failed: %v", err)
+	}
+	if _, err := g.DB("master").Model("admin_user_profile").Ctx(ctx).Where("user_id = ?", res.UserId).Data(g.Map{
 		"last_login_at": now,
 		"update_time":   now,
-	}).Update()
-	_, _ = g.DB("master").Model("admin_operation_log").Ctx(ctx).Data(g.Map{
+	}).Update(); err != nil {
+		consts.Logger.Warningf(ctx, "update admin_user_profile last_login failed: %v", err)
+	}
+	if _, err := g.DB("master").Model("admin_operation_log").Ctx(ctx).Data(g.Map{
 		"log_type":    "system",
 		"username":    user.Username,
 		"action_type": "用户登录",
 		"content":     "用户登录问答问数平台",
 		"result":      "success",
 		"create_time": now,
-	}).Insert()
+	}).Insert(); err != nil {
+		consts.Logger.Warningf(ctx, "insert login audit log failed: %v", err)
+	}
 	return
 }
 
@@ -393,8 +399,8 @@ func emptyAlertSummary() v1.UserAlertSummary {
 }
 
 func currentUserId(ctx context.Context) int64 {
-	userIdVal := ctx.Value(model.UserGroup{})
-	if userIdVal == nil {
+	userIdVal := model.UserIdFromContext(ctx)
+	if userIdVal == 0 {
 		return 0
 	}
 	return gconv.Int64(userIdVal)
@@ -439,9 +445,13 @@ func knowledgePermissionsForUser(ctx context.Context, userId int64, enabledOnly 
 
 	enabledByCode := make(map[string]bool, len(bases))
 	if userId > 0 {
-		perms, _ := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Where("user_id = ?", userId).All()
-		for _, perm := range perms {
-			enabledByCode[normalizeQaKnowledgeCode(perm["knowledge_code"].String())] = perm["enabled"].Int() != 0
+		perms, err := g.DB("master").Model("admin_user_knowledge_permission").Ctx(ctx).Where("user_id = ?", userId).All()
+		if err != nil {
+			consts.Logger.Warningf(ctx, "query user knowledge permissions failed: %v", err)
+		} else {
+			for _, perm := range perms {
+				enabledByCode[normalizeQaKnowledgeCode(perm["knowledge_code"].String())] = perm["enabled"].Int() != 0
+			}
 		}
 	}
 

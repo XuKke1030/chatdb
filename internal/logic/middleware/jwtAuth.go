@@ -4,7 +4,6 @@ import (
 	"ai-chat-sql/internal/consts"
 	"ai-chat-sql/internal/model"
 	"ai-chat-sql/internal/service"
-	"context"
 	"os"
 	"strings"
 
@@ -33,7 +32,7 @@ func (s *sMiddleware) JwtAuth(subject string) func(r *ghttp.Request) {
 
 		// Skip auth for public routes
 		if noAuthPaths[r.URL.Path] {
-			r.SetCtx(context.WithValue(ctx, model.UserGroup{}, 0))
+			r.SetCtx(model.ContextWithUserId(ctx, 0))
 			r.Middleware.Next()
 			return
 		}
@@ -57,7 +56,7 @@ func (s *sMiddleware) JwtAuth(subject string) func(r *ghttp.Request) {
 			return
 		}
 
-		r.SetCtx(context.WithValue(ctx, model.UserGroup{}, userId))
+		r.SetCtx(model.ContextWithUserId(ctx, userId))
 		r.Middleware.Next()
 	}
 }

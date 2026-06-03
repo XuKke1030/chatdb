@@ -1,6 +1,7 @@
 package traffic
 
 import (
+	"ai-chat-sql/internal/consts"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ type holidayAPIResponse struct {
 type holidayAPIDatum struct {
 	Name    string `json:"name"`
 	Holiday bool   `json:"holiday"`
+	Date    string `json:"date"`
 }
 
 func (s *sTraffic) FetchHolidaysFromAPI(ctx context.Context, year int) error {
@@ -41,16 +43,18 @@ func (s *sTraffic) FetchHolidaysFromAPI(ctx context.Context, year int) error {
 	}
 
 	db := g.DB("master")
-	for dateStr, datum := range result.Data {
+	for _, datum := range result.Data {
 		holidayType := "workday"
 		if datum.Holiday {
 			holidayType = "holiday"
 		}
-		_, _ = db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 INSERT INTO traffic_holiday (holiday_date, holiday_name, holiday_type)
 VALUES (?, ?, ?)
 ON DUPLICATE KEY UPDATE holiday_name = VALUES(holiday_name), holiday_type = VALUES(holiday_type)`,
-			dateStr, datum.Name, holidayType)
+			datum.Date, datum.Name, holidayType); err != nil {
+			consts.Logger.Warningf(ctx, "holiday API sync failed for %s: %v", datum.Date, err)
+		}
 	}
 
 	g.Log().Infof(ctx, "FetchHolidaysFromAPI: synced %d dates for year %d", len(result.Data), year)

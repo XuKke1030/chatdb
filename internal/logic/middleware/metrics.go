@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/gogf/gf/v2/net/ghttp"
-	"github.com/gogf/gf/v2/util/gconv"
 )
 
 func (s *sMiddleware) RequestMetrics(r *ghttp.Request) {
@@ -17,10 +16,7 @@ func (s *sMiddleware) RequestMetrics(r *ghttp.Request) {
 	if status == 0 {
 		status = 200
 	}
-	userId := 0
-	if userIdVal := r.GetCtx().Value(model.UserGroup{}); userIdVal != nil {
-		userId = gconv.Int(userIdVal)
-	}
+	userId := model.UserIdFromContext(r.GetCtx())
 	costMs := time.Since(start).Milliseconds()
 	logFormat := "perf request method=%s path=%s status=%d userId=%d costMs=%d"
 	args := []any{r.Method, r.URL.Path, status, userId, costMs}

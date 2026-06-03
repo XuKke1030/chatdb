@@ -13,7 +13,7 @@ type ChatInput struct {
 	Prompt        string            `json:"prompt" dc:"临时提示词"`
 	Message       string            `json:"message" v:"required#消息不能为空" dc:"消息"`
 	DatabaseId    int               `json:"databaseId" v:"required#数据库配置ID不能为空" dc:"数据库配置ID"`
-	Topic         string            `json:"topic" dc:"主题：grid|population|traffic"`
+	Topic         string            `json:"topic" v:"in:grid,population,traffic#主题须为grid/population/traffic" dc:"主题：grid|population|traffic"`
 	KnowledgeCode string            `json:"knowledgeCode" dc:"问答知识库编码"`
 	SessionId     string            `json:"sessionId" dc:"问数会话ID，不传时自动创建"`
 	Source        string            `json:"source" dc:"来源：topic_entry|alert_click"`

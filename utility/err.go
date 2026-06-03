@@ -21,14 +21,9 @@ func SafeUserErr(err error) string {
 	lower := strings.ToLower(msg)
 
 	// 白名单：已知可安全暴露的错误模式
-	// 注意：更具体的规则放在前面，Redis 连接错误需在通用连接错误之前匹配
 	switch {
 	case strings.Contains(msg, "GraphRunError") || strings.Contains(lower, "max steps") || strings.Contains(lower, "exceeds max steps"):
 		return "当前问题的自动分析步骤过多，暂时未能完成计算。请缩小时间范围或明确统计口径后重试。"
-	case strings.Contains(lower, "redis") && (strings.Contains(lower, "connection") || strings.Contains(lower, "connect")):
-		return "Redis 连接异常，请稍后重试。"
-	case strings.Contains(lower, "redis") && strings.Contains(lower, "nil"):
-		return "Redis 中未找到对应数据。"
 	case strings.Contains(lower, "timeout") || strings.Contains(lower, "context deadline") || strings.Contains(lower, "超时"):
 		return "查询超时，请尝试简化问题或换一种问法。"
 	case strings.Contains(lower, "connection refused") || strings.Contains(lower, "no such host") || strings.Contains(lower, "i/o timeout"):

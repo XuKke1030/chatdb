@@ -42,13 +42,13 @@ type UserPermissionsReq struct {
 }
 
 type UserPermissionsRes struct {
-	Authenticated     bool                      `json:"authenticated"`
-	UserId            int64                     `json:"userId,omitempty"`
-	Username          string                    `json:"username,omitempty"`
-	RuleLevel         int                       `json:"ruleLevel"`
-	PermissionVersion int                       `json:"permissionVersion"`
-	Permissions       []model.TopicItem         `json:"permissions"`
-	QaPermissions     []UserKnowledgePermission `json:"qaPermissions"`
+	Authenticated     bool                      `json:"authenticated" dc:"是否已认证"`
+	UserId            int64                     `json:"userId,omitempty" dc:"用户ID"`
+	Username          string                    `json:"username,omitempty" dc:"用户名"`
+	RuleLevel         int                       `json:"ruleLevel" dc:"权限等级"`
+	PermissionVersion int                       `json:"permissionVersion" dc:"权限版本"`
+	Permissions       []model.TopicItem         `json:"permissions" dc:"主题权限列表"`
+	QaPermissions     []UserKnowledgePermission `json:"qaPermissions" dc:"问答知识库权限"`
 }
 
 type UserBootstrapReq struct {
@@ -56,32 +56,32 @@ type UserBootstrapReq struct {
 }
 
 type UserBootstrapRes struct {
-	Authenticated     bool                      `json:"authenticated"`
-	User              *model.User               `json:"user,omitempty"`
-	RuleLevel         int                       `json:"ruleLevel"`
-	PermissionVersion int                       `json:"permissionVersion"`
-	TopicPermissions  []model.TopicItem         `json:"topicPermissions"`
-	Topics            []model.TopicItem         `json:"topics"`
-	QaPermissions     []UserKnowledgePermission `json:"qaPermissions"`
-	KnowledgeBases    []UserKnowledgePermission `json:"knowledgeBases"`
-	PopularQuestions  []UserPopularQuestionItem `json:"popularQuestions"`
-	AlertSummary      UserAlertSummary          `json:"alertSummary"`
-	WelcomeMessage    string                    `json:"welcomeMessage"`
-	WelcomeSubtext    string                    `json:"welcomeSubtext"`
+	Authenticated     bool                      `json:"authenticated" dc:"是否已认证"`
+	User              *model.User               `json:"user,omitempty" dc:"用户信息"`
+	RuleLevel         int                       `json:"ruleLevel" dc:"权限等级"`
+	PermissionVersion int                       `json:"permissionVersion" dc:"权限版本"`
+	TopicPermissions  []model.TopicItem         `json:"topicPermissions" dc:"主题权限列表"`
+	Topics            []model.TopicItem         `json:"topics" dc:"可用主题列表"`
+	QaPermissions     []UserKnowledgePermission `json:"qaPermissions" dc:"问答知识库权限"`
+	KnowledgeBases    []UserKnowledgePermission `json:"knowledgeBases" dc:"可用知识库列表"`
+	PopularQuestions  []UserPopularQuestionItem `json:"popularQuestions" dc:"热门问题列表"`
+	AlertSummary      UserAlertSummary          `json:"alertSummary" dc:"告警摘要"`
+	WelcomeMessage    string                    `json:"welcomeMessage" dc:"欢迎语"`
+	WelcomeSubtext    string                    `json:"welcomeSubtext" dc:"欢迎副标题"`
 }
 
 type UserAlertSummary struct {
-	Total    int               `json:"total"`
-	Critical int               `json:"critical"`
-	Warning  int               `json:"warning"`
-	ByTopic  map[string]int    `json:"byTopic"`
-	Latest   []model.AlertItem `json:"latest"`
+	Total    int               `json:"total" dc:"告警总数"`
+	Critical int               `json:"critical" dc:"严重告警数"`
+	Warning  int               `json:"warning" dc:"警告数"`
+	ByTopic  map[string]int    `json:"byTopic" dc:"按主题统计"`
+	Latest   []model.AlertItem `json:"latest" dc:"最新告警"`
 }
 
 type UserKnowledgePermission struct {
-	Code    string `json:"code"`
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
+	Code    string `json:"code" dc:"知识库编码"`
+	Name    string `json:"name" dc:"知识库名称"`
+	Enabled bool   `json:"enabled" dc:"是否启用"`
 }
 
 type UserTopicsReq struct {
