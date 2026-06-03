@@ -619,6 +619,79 @@ description TEXT,
 create_time TEXT DEFAULT CURRENT_TIMESTAMP,
 update_time TEXT DEFAULT CURRENT_TIMESTAMP
 )`,
+			`CREATE TABLE IF NOT EXISTS chat_session (
+	session_id TEXT PRIMARY KEY,
+	user_id INTEGER NOT NULL DEFAULT 0,
+	topic TEXT,
+	source TEXT,
+	alert_id INTEGER NOT NULL DEFAULT 0,
+	suggested_questions TEXT,
+	input_placeholder TEXT,
+	create_time INTEGER NOT NULL,
+	update_time INTEGER NOT NULL
+	)`,
+			`CREATE TABLE IF NOT EXISTS qa_sync_task (
+	task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	provider TEXT NOT NULL,
+	sync_type TEXT NOT NULL DEFAULT 'full',
+	status TEXT NOT NULL DEFAULT 'pending',
+	message TEXT,
+	success_count INTEGER NOT NULL DEFAULT 0,
+	failure_count INTEGER NOT NULL DEFAULT 0,
+	skipped_count INTEGER NOT NULL DEFAULT 0,
+	started_at INTEGER NOT NULL DEFAULT 0,
+	finished_at INTEGER NOT NULL DEFAULT 0,
+	create_time INTEGER NOT NULL,
+	update_time INTEGER NOT NULL
+	)`,
+			`CREATE TABLE IF NOT EXISTS qa_sync_log (
+	log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id INTEGER NOT NULL,
+	provider TEXT NOT NULL,
+	sync_type TEXT NOT NULL,
+	external_id TEXT,
+	local_id TEXT,
+	action TEXT NOT NULL,
+	status TEXT NOT NULL,
+	message TEXT,
+	create_time INTEGER NOT NULL
+	)`,
+			`CREATE TABLE IF NOT EXISTS admin_topic_knowledge_binding (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	topic TEXT NOT NULL,
+	knowledge_code TEXT NOT NULL,
+	knowledge_name TEXT,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	create_time INTEGER NOT NULL,
+	update_time INTEGER NOT NULL
+	)`,
+			`CREATE TABLE IF NOT EXISTS admin_document_relation (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	from_doc_id INTEGER NOT NULL,
+	from_doc_title TEXT,
+	to_doc_id INTEGER NOT NULL,
+	to_doc_title TEXT,
+	rel_type TEXT NOT NULL,
+	description TEXT,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	create_time INTEGER NOT NULL,
+	update_time INTEGER NOT NULL
+	)`,
+			`CREATE TABLE IF NOT EXISTS admin_metric (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	topic TEXT NOT NULL,
+	metric_name TEXT NOT NULL,
+	display_name TEXT NOT NULL,
+	description TEXT,
+	unit TEXT,
+	dimensions TEXT,
+	default_threshold REAL,
+	threshold_direction TEXT,
+	chart_type_hint TEXT,
+	is_active INTEGER NOT NULL DEFAULT 1,
+	create_time INTEGER NOT NULL,
+	update_time INTEGER NOT NULL
+	)`,
 	}
 }
 
@@ -741,6 +814,85 @@ INDEX idx_case_number (case_number),
 INDEX idx_report_time (report_time),
 INDEX idx_case_type (case_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS chat_session (
+	session_id VARCHAR(64) PRIMARY KEY,
+	user_id INT NOT NULL DEFAULT 0,
+	topic VARCHAR(32),
+	source VARCHAR(32),
+	alert_id INT NOT NULL DEFAULT 0,
+	suggested_questions TEXT,
+	input_placeholder VARCHAR(255),
+	create_time INT NOT NULL,
+	update_time INT NOT NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS qa_sync_task (
+	task_id INT PRIMARY KEY AUTO_INCREMENT,
+	provider VARCHAR(64) NOT NULL,
+	sync_type VARCHAR(16) NOT NULL DEFAULT 'full',
+	status VARCHAR(32) NOT NULL DEFAULT 'pending',
+	message TEXT,
+	success_count INT NOT NULL DEFAULT 0,
+	failure_count INT NOT NULL DEFAULT 0,
+	skipped_count INT NOT NULL DEFAULT 0,
+	started_at INT NOT NULL DEFAULT 0,
+	finished_at INT NOT NULL DEFAULT 0,
+	create_time INT NOT NULL,
+	update_time INT NOT NULL,
+	INDEX idx_provider_status (provider, status)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS qa_sync_log (
+	log_id INT PRIMARY KEY AUTO_INCREMENT,
+	task_id INT NOT NULL,
+	provider VARCHAR(64) NOT NULL,
+	sync_type VARCHAR(16) NOT NULL,
+	external_id VARCHAR(255),
+	local_id VARCHAR(255),
+	action VARCHAR(32) NOT NULL,
+	status VARCHAR(32) NOT NULL,
+	message TEXT,
+	create_time INT NOT NULL,
+	INDEX idx_task_id (task_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS admin_topic_knowledge_binding (
+	id INT PRIMARY KEY AUTO_INCREMENT,
+	topic VARCHAR(32) NOT NULL,
+	knowledge_code VARCHAR(64) NOT NULL,
+	knowledge_name VARCHAR(128),
+	enabled TINYINT NOT NULL DEFAULT 1,
+	create_time INT NOT NULL,
+	update_time INT NOT NULL,
+	UNIQUE KEY uk_topic_code (topic, knowledge_code)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS admin_document_relation (
+	id INT PRIMARY KEY AUTO_INCREMENT,
+	from_doc_id INT NOT NULL,
+	from_doc_title VARCHAR(255),
+	to_doc_id INT NOT NULL,
+	to_doc_title VARCHAR(255),
+	rel_type VARCHAR(32) NOT NULL,
+	description TEXT,
+	enabled TINYINT NOT NULL DEFAULT 1,
+	create_time INT NOT NULL,
+	update_time INT NOT NULL,
+	INDEX idx_from_doc (from_doc_id),
+	INDEX idx_to_doc (to_doc_id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+			`CREATE TABLE IF NOT EXISTS admin_metric (
+	id INT PRIMARY KEY AUTO_INCREMENT,
+	topic VARCHAR(32) NOT NULL,
+	metric_name VARCHAR(64) NOT NULL,
+	display_name VARCHAR(128) NOT NULL,
+	description TEXT,
+	unit VARCHAR(32),
+	dimensions TEXT,
+	default_threshold DOUBLE,
+	threshold_direction VARCHAR(16),
+	chart_type_hint VARCHAR(32),
+	is_active TINYINT NOT NULL DEFAULT 1,
+	create_time INT NOT NULL,
+	update_time INT NOT NULL,
+	UNIQUE KEY uk_topic_metric (topic, metric_name)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 	}
 }
 
@@ -804,7 +956,31 @@ func seedAdminTables(ctx context.Context, db gdb.DB) error {
 				return err
 			}
 		}
-	}
+		}
+		if count, err := db.Model("admin_topic_knowledge_binding").Ctx(ctx).Count(); err == nil && count == 0 {
+			bindings := []g.Map{
+				{"topic": "grid", "knowledge_code": "policy_files", "knowledge_name": "\u653f\u7b56\u6587\u4ef6\u5e93", "enabled": 1, "create_time": now, "update_time": now},
+				{"topic": "grid", "knowledge_code": "case_library", "knowledge_name": "\u5386\u53f2\u6848\u4f8b\u5e93", "enabled": 1, "create_time": now, "update_time": now},
+				{"topic": "population", "knowledge_code": "laws", "knowledge_name": "\u6cd5\u89c4\u77e5\u8bc6\u5e93", "enabled": 1, "create_time": now, "update_time": now},
+			}
+			for _, b := range bindings {
+				if _, err := db.Model("admin_topic_knowledge_binding").Ctx(ctx).Data(b).Insert(); err != nil {
+					return err
+				}
+			}
+		}
+		if count, err := db.Model("admin_metric").Ctx(ctx).Count(); err == nil && count == 0 {
+			metrics := []g.Map{
+				{"topic": "grid", "metric_name": "grid_close_rate", "display_name": "\u7f51\u683c\u7ed3\u6848\u7387", "description": "\u672c\u6708\u7f51\u683c\u6848\u4ef6\u7ed3\u6848\u5360\u6bd4", "unit": "%", "dimensions": "[]", "default_threshold": 80.0, "threshold_direction": "above", "chart_type_hint": "gauge", "is_active": 1, "create_time": now, "update_time": now},
+				{"topic": "population", "metric_name": "population_inflow", "display_name": "\u4eba\u53e3\u6d41\u5165", "description": "\u4e0a\u5468\u4eba\u53e3\u51c0\u6d41\u5165\u6570", "unit": "\u4eba", "dimensions": "[]", "default_threshold": nil, "threshold_direction": "", "chart_type_hint": "line", "is_active": 1, "create_time": now, "update_time": now},
+				{"topic": "traffic", "metric_name": "vehicle_ratio", "display_name": "\u8f66\u8f86\u5360\u6bd4", "description": "\u4eca\u65e5\u53e3\u5cb8\u8f66\u8f86\u5360\u6bd4", "unit": "%", "dimensions": "[]", "default_threshold": nil, "threshold_direction": "", "chart_type_hint": "pie", "is_active": 1, "create_time": now, "update_time": now},
+			}
+			for _, m := range metrics {
+				if _, err := db.Model("admin_metric").Ctx(ctx).Data(m).Insert(); err != nil {
+					return err
+				}
+			}
+		}
 	return nil
 }
 
@@ -1651,4 +1827,285 @@ func (c *ControllerV1) AdminCaseStatistics(ctx context.Context, req *v1.AdminCas
 			ByPending: byPending,
 		},
 	}, nil
+}
+
+func (c *ControllerV1) AdminTopicKnowledgeBindings(ctx context.Context, req *v1.AdminTopicKnowledgeBindingsReq) (res *v1.AdminTopicKnowledgeBindingsRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	records, err := g.DB("master").Model("admin_topic_knowledge_binding").Ctx(ctx).OrderAsc("id").All()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]v1.TopicKnowledgeBindingItem, 0, len(records))
+	for _, r := range records {
+		list = append(list, v1.TopicKnowledgeBindingItem{
+			Id:            r["id"].Int(),
+			Topic:         r["topic"].String(),
+			KnowledgeCode: r["knowledge_code"].String(),
+			KnowledgeName: r["knowledge_name"].String(),
+			Enabled:       r["enabled"].Int() != 0,
+			CreateTime:    r["create_time"].Int(),
+			UpdateTime:    r["update_time"].Int(),
+		})
+	}
+	return &v1.AdminTopicKnowledgeBindingsRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminCreateTopicKnowledgeBinding(ctx context.Context, req *v1.AdminCreateTopicKnowledgeBindingReq) (res *v1.AdminCreateTopicKnowledgeBindingRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	kbRecord, err := g.DB("master").Model("admin_knowledge_base").Ctx(ctx).Where("code = ?", req.KnowledgeCode).One()
+	if err != nil {
+		return nil, err
+	}
+	knowledgeName := req.KnowledgeCode
+	if kbRecord != nil {
+		knowledgeName = kbRecord["name"].String()
+	}
+	now := int(gtime.Timestamp())
+	result, err := g.DB("master").Model("admin_topic_knowledge_binding").Ctx(ctx).Data(g.Map{
+		"topic":          req.Topic,
+		"knowledge_code": req.KnowledgeCode,
+		"knowledge_name": knowledgeName,
+		"enabled":        1,
+		"create_time":    now,
+		"update_time":    now,
+	}).Insert()
+	if err != nil {
+		return nil, err
+	}
+	id, _ := result.LastInsertId()
+	record, _ := g.DB("master").Model("admin_topic_knowledge_binding").Ctx(ctx).Where("id = ?", id).One()
+	item := v1.TopicKnowledgeBindingItem{}
+	if record != nil {
+		item = v1.TopicKnowledgeBindingItem{
+			Id:            record["id"].Int(),
+			Topic:         record["topic"].String(),
+			KnowledgeCode: record["knowledge_code"].String(),
+			KnowledgeName: record["knowledge_name"].String(),
+			Enabled:       record["enabled"].Int() != 0,
+			CreateTime:    record["create_time"].Int(),
+			UpdateTime:    record["update_time"].Int(),
+		}
+	}
+	return &v1.AdminCreateTopicKnowledgeBindingRes{Item: item}, nil
+}
+
+func (c *ControllerV1) AdminToggleTopicKnowledgeBinding(ctx context.Context, req *v1.AdminToggleTopicKnowledgeBindingReq) (res *v1.AdminToggleTopicKnowledgeBindingRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	_, err = g.DB("master").Model("admin_topic_knowledge_binding").Ctx(ctx).Where("id = ?", req.Id).Data(g.Map{
+		"enabled":     boolToInt(req.Enabled),
+		"update_time": int(gtime.Timestamp()),
+	}).Update()
+	return &v1.AdminToggleTopicKnowledgeBindingRes{}, err
+}
+
+func (c *ControllerV1) AdminDeleteTopicKnowledgeBinding(ctx context.Context, req *v1.AdminDeleteTopicKnowledgeBindingReq) (res *v1.AdminDeleteTopicKnowledgeBindingRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	_, err = g.DB("master").Model("admin_topic_knowledge_binding").Ctx(ctx).Where("id = ?", req.Id).Delete()
+	return &v1.AdminDeleteTopicKnowledgeBindingRes{}, err
+}
+
+func (c *ControllerV1) AdminDocumentRelations(ctx context.Context, req *v1.AdminDocumentRelationsReq) (res *v1.AdminDocumentRelationsRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	records, err := g.DB("master").Model("admin_document_relation").Ctx(ctx).OrderAsc("id").All()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]v1.DocumentRelationItem, 0, len(records))
+	for _, r := range records {
+		list = append(list, v1.DocumentRelationItem{
+			Id:           r["id"].Int(),
+			FromDocId:    r["from_doc_id"].Int(),
+			FromDocTitle: r["from_doc_title"].String(),
+			ToDocId:      r["to_doc_id"].Int(),
+			ToDocTitle:   r["to_doc_title"].String(),
+			RelType:      r["rel_type"].String(),
+			Description:  r["description"].String(),
+			Enabled:      r["enabled"].Int() != 0,
+		})
+	}
+	return &v1.AdminDocumentRelationsRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminCreateDocumentRelation(ctx context.Context, req *v1.AdminCreateDocumentRelationReq) (res *v1.AdminCreateDocumentRelationRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	now := int(gtime.Timestamp())
+	_, err = g.DB("master").Model("admin_document_relation").Ctx(ctx).Data(g.Map{
+		"from_doc_id":    req.FromDocId,
+		"from_doc_title": "",
+		"to_doc_id":      req.ToDocId,
+		"to_doc_title":   "",
+		"rel_type":       req.RelType,
+		"description":    req.Description,
+		"enabled":        1,
+		"create_time":    now,
+		"update_time":    now,
+	}).Insert()
+	return &v1.AdminCreateDocumentRelationRes{}, err
+}
+
+func (c *ControllerV1) AdminDeleteDocumentRelation(ctx context.Context, req *v1.AdminDeleteDocumentRelationReq) (res *v1.AdminDeleteDocumentRelationRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	_, err = g.DB("master").Model("admin_document_relation").Ctx(ctx).Where("id = ?", req.Id).Delete()
+	return &v1.AdminDeleteDocumentRelationRes{}, err
+}
+
+func (c *ControllerV1) AdminAutoDocumentRelation(ctx context.Context, req *v1.AdminAutoDocumentRelationReq) (res *v1.AdminAutoDocumentRelationRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	return &v1.AdminAutoDocumentRelationRes{
+		Discovered: []v1.DocumentRelationItem{},
+		Created:    0,
+	}, nil
+}
+
+func (c *ControllerV1) AdminDocumentCompliance(ctx context.Context, req *v1.AdminDocumentComplianceReq) (res *v1.AdminDocumentComplianceRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	return &v1.AdminDocumentComplianceRes{
+		Issues: []v1.ComplianceIssueItem{},
+	}, nil
+}
+
+func (c *ControllerV1) AdminMetrics(ctx context.Context, req *v1.AdminMetricsReq) (res *v1.AdminMetricsRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	records, err := g.DB("master").Model("admin_metric").Ctx(ctx).OrderAsc("id").All()
+	if err != nil {
+		return nil, err
+	}
+	list := make([]v1.MetricItem, 0, len(records))
+	for _, r := range records {
+		var dims []string
+		if r["dimensions"].String() != "" {
+			_ = json.Unmarshal([]byte(r["dimensions"].String()), &dims)
+		}
+		var threshold *float64
+		if r["default_threshold"].Val() != nil {
+			v := r["default_threshold"].Float64()
+			threshold = &v
+		}
+		list = append(list, v1.MetricItem{
+			Id:                 r["id"].Int(),
+			Topic:              r["topic"].String(),
+			MetricName:         r["metric_name"].String(),
+			DisplayName:        r["display_name"].String(),
+			Description:        r["description"].String(),
+			Unit:               r["unit"].String(),
+			Dimensions:         dims,
+			DefaultThreshold:   threshold,
+			ThresholdDirection: r["threshold_direction"].String(),
+			ChartTypeHint:      r["chart_type_hint"].String(),
+			IsActive:           r["is_active"].Int() != 0,
+		})
+	}
+	return &v1.AdminMetricsRes{List: list}, nil
+}
+
+func (c *ControllerV1) AdminCreateMetric(ctx context.Context, req *v1.AdminCreateMetricReq) (res *v1.AdminCreateMetricRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	now := int(gtime.Timestamp())
+	dimsJSON, _ := json.Marshal([]string{})
+	thresholdStr := "NULL"
+	if req.DefaultThreshold != nil {
+		thresholdStr = fmt.Sprintf("%f", *req.DefaultThreshold)
+	}
+	_, err = g.DB("master").Model("admin_metric").Ctx(ctx).Data(g.Map{
+		"topic":               req.Topic,
+		"metric_name":         req.MetricName,
+		"display_name":        req.DisplayName,
+		"description":         "",
+		"unit":                req.Unit,
+		"dimensions":          string(dimsJSON),
+		"default_threshold":   thresholdStr,
+		"threshold_direction": req.ThresholdDirection,
+		"chart_type_hint":     req.ChartTypeHint,
+		"is_active":           1,
+		"create_time":         now,
+		"update_time":         now,
+	}).Insert()
+	return &v1.AdminCreateMetricRes{}, err
+}
+
+func (c *ControllerV1) AdminUpdateMetric(ctx context.Context, req *v1.AdminUpdateMetricReq) (res *v1.AdminUpdateMetricRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	data := g.Map{"update_time": int(gtime.Timestamp())}
+	if req.Topic != "" {
+		data["topic"] = req.Topic
+	}
+	if req.MetricName != "" {
+		data["metric_name"] = req.MetricName
+	}
+	if req.DisplayName != "" {
+		data["display_name"] = req.DisplayName
+	}
+	if req.Description != "" {
+		data["description"] = req.Description
+	}
+	if req.Unit != "" {
+		data["unit"] = req.Unit
+	}
+	if req.Dimensions != nil {
+		dimsJSON, _ := json.Marshal(req.Dimensions)
+		data["dimensions"] = string(dimsJSON)
+	}
+	if req.DefaultThreshold != nil {
+		data["default_threshold"] = fmt.Sprintf("%f", *req.DefaultThreshold)
+	}
+	if req.ThresholdDirection != "" {
+		data["threshold_direction"] = req.ThresholdDirection
+	}
+	if req.ChartTypeHint != "" {
+		data["chart_type_hint"] = req.ChartTypeHint
+	}
+	_, err = g.DB("master").Model("admin_metric").Ctx(ctx).Where("id = ?", req.Id).Data(data).Update()
+	return &v1.AdminUpdateMetricRes{}, err
+}
+
+func (c *ControllerV1) AdminDeleteMetric(ctx context.Context, req *v1.AdminDeleteMetricReq) (res *v1.AdminDeleteMetricRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	_, err = g.DB("master").Model("admin_metric").Ctx(ctx).Where("id = ?", req.Id).Delete()
+	return &v1.AdminDeleteMetricRes{}, err
+}
+
+func (c *ControllerV1) AdminToggleMetric(ctx context.Context, req *v1.AdminToggleMetricReq) (res *v1.AdminToggleMetricRes, err error) {
+	if err = ensureAdminTables(ctx); err != nil {
+		return nil, err
+	}
+	var isActive int
+	record, _ := g.DB("master").Model("admin_metric").Ctx(ctx).Where("id = ?", req.Id).One()
+	if record != nil {
+		isActive = record["is_active"].Int()
+	}
+	newVal := 1
+	if isActive != 0 {
+		newVal = 0
+	}
+	_, err = g.DB("master").Model("admin_metric").Ctx(ctx).Where("id = ?", req.Id).Data(g.Map{
+		"is_active":   newVal,
+		"update_time": int(gtime.Timestamp()),
+	}).Update()
+	return &v1.AdminToggleMetricRes{}, err
 }

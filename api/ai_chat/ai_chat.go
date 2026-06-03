@@ -12,6 +12,8 @@ import (
 
 type IAiChatV1 interface {
 	Chat(ctx context.Context, req *v1.ChatReq) (res *v1.ChatRes, err error)
+	ChatSessionCreate(ctx context.Context, req *v1.ChatSessionCreateReq) (res *v1.ChatSessionCreateRes, err error)
+	ChatSessionReset(ctx context.Context, req *v1.ChatSessionResetReq) (res *v1.ChatSessionResetRes, err error)
 	SetDataBaseConfig(ctx context.Context, req *v1.SetDataBaseConfigReq) (res *v1.SetDataBaseConfigRes, err error)
 	UpdateDataBaseConfig(ctx context.Context, req *v1.UpdateDataBaseConfigReq) (res *v1.UpdateDataBaseConfigRes, err error)
 	DeleteDataBaseConfig(ctx context.Context, req *v1.DeleteDataBaseConfigReq) (res *v1.DeleteDataBaseConfigRes, err error)
@@ -20,4 +22,8 @@ type IAiChatV1 interface {
 	ExportDownload(ctx context.Context, req *v1.ExportDownloadReq) (res *v1.ExportDownloadRes, err error)
 	AlertList(ctx context.Context, req *v1.AlertListReq) (res *v1.AlertListRes, err error)
 	AlertDismiss(ctx context.Context, req *v1.AlertDismissReq) (res *v1.AlertDismissRes, err error)
+	QaSyncStatus(ctx context.Context, req *v1.QaSyncStatusReq) (res *v1.QaSyncStatusRes, err error)
+	QaSyncTaskLogs(ctx context.Context, req *v1.QaSyncTaskLogsReq) (res *v1.QaSyncTaskLogsRes, err error)
+	QaSyncTrigger(ctx context.Context, req *v1.QaSyncTriggerReq) (res *v1.QaSyncTriggerRes, err error)
+	ExampleQuestions(ctx context.Context, req *v1.ExampleQuestionsReq) (res *v1.ExampleQuestionsRes, err error)
 }

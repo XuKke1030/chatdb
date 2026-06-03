@@ -137,6 +137,25 @@ func (c *ControllerV1) UserPopularQuestions(ctx context.Context, req *v1.UserPop
 	return &v1.UserPopularQuestionsRes{List: list}, nil
 }
 
+func (c *ControllerV1) UserBootstrap(ctx context.Context, req *v1.UserBootstrapReq) (res *v1.UserBootstrapRes, err error) {
+	userId := currentUserId(ctx)
+	authenticated := userId > 0
+	welcomeMessage := ""
+	welcomeSubtext := ""
+
+	if authenticated {
+		username := usernameById(ctx, userId)
+		welcomeMessage = "您好，" + username
+		welcomeSubtext = "请选择业务主题"
+	}
+
+	return &v1.UserBootstrapRes{
+		WelcomeMessage: welcomeMessage,
+		WelcomeSubtext: welcomeSubtext,
+		Authenticated:  authenticated,
+	}, nil
+}
+
 func currentUserId(ctx context.Context) int64 {
 	userIdVal := ctx.Value(model.UserGroup{})
 	if userIdVal == nil {

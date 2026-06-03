@@ -14,6 +14,7 @@ import (
 	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gtime"
 	"github.com/gogf/gf/v2/util/gconv"
+	"github.com/gogf/gf/v2/util/grand"
 )
 
 // topicPermissionMap 主题权限位掩码映射
@@ -150,4 +151,71 @@ func insertSystemQueryLog(ctx context.Context, username string, topic string, me
 		"result":      result,
 		"create_time": int(gtime.Timestamp()),
 	}).Insert()
+}
+
+var topicDefaultSuggestions = map[string]struct {
+	questions   []string
+	placeholder string
+}{
+	"grid": {
+		questions:   []string{"本月高新增区案终结率是多少？", "本月各网格案件分布情况", "近一周新增案件趋势如何？"},
+		placeholder: "输入网格相关问题...",
+	},
+	"population": {
+		questions:   []string{"过去一周人流进出趋势如何？", "今日各区域人流量对比", "人流高峰时段分布"},
+		placeholder: "输入人流相关问题...",
+	},
+	"traffic": {
+		questions:   []string{"今日港珠澳车辆占比是多少？", "各卡口车流量排名", "本周车流变化趋势"},
+		placeholder: "输入车流相关问题...",
+	},
+}
+
+func (c *ControllerV1) ChatSessionCreate(ctx context.Context, req *v1.ChatSessionCreateReq) (res *v1.ChatSessionCreateRes, err error) {
+	userId := gconv.Int(ctx.Value(model.UserGroup{}))
+	now := int(gtime.Timestamp())
+	sessionId := fmt.Sprintf("sess_%d_%d", now, grand.N(100000, 999999))
+
+	suggestions := topicDefaultSuggestions[req.Topic]
+	suggestedQuestions := suggestions.questions
+	if len(suggestedQuestions) == 0 {
+		suggestedQuestions = []string{}
+	}
+	inputPlaceholder := suggestions.placeholder
+	if inputPlaceholder == "" {
+		inputPlaceholder = "输入您的问题..."
+	}
+
+	_, err = g.DB("master").Model("chat_session").Ctx(ctx).Data(g.Map{
+		"session_id":          sessionId,
+		"user_id":             userId,
+		"topic":               req.Topic,
+		"source":              req.Source,
+		"alert_id":            req.AlertId,
+		"suggested_questions": gjson.MustEncodeString(suggestedQuestions),
+		"input_placeholder":   inputPlaceholder,
+		"create_time":         now,
+		"update_time":         now,
+	}).Insert()
+	if err != nil {
+		return
+	}
+
+	return &v1.ChatSessionCreateRes{
+		SessionId:          sessionId,
+		SuggestedQuestions: suggestedQuestions,
+		InputPlaceholder:   inputPlaceholder,
+	}, nil
+}
+
+func (c *ControllerV1) ChatSessionReset(ctx context.Context, req *v1.ChatSessionResetReq) (res *v1.ChatSessionResetRes, err error) {
+	now := int(gtime.Timestamp())
+	_, err = g.DB("master").Model("chat_session").Ctx(ctx).
+		Where("session_id = ?", req.Id).
+		Data(g.Map{"update_time": now}).
+		Update()
+	if err != nil {
+		return
+	}
+	return &v1.ChatSessionResetRes{}, nil
 }

@@ -70,3 +70,13 @@ type UserPopularQuestionItem struct {
 type UserPopularQuestionsRes struct {
 	List []UserPopularQuestionItem `json:"list"`
 }
+
+type UserBootstrapReq struct {
+	g.Meta `path:"/user/bootstrap" method:"get" tags:"V1/用户" sm:"用户引导" dc:"获取当前用户欢迎语和认证状态"`
+}
+
+type UserBootstrapRes struct {
+	WelcomeMessage string `json:"welcomeMessage"`
+	WelcomeSubtext string `json:"welcomeSubtext"`
+	Authenticated  bool   `json:"authenticated"`
+}

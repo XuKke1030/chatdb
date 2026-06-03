@@ -350,3 +350,181 @@ type AdminLogsReq struct {
 type AdminLogsRes struct {
 	List []AdminLogItem `json:"list"`
 }
+
+// --- Topic-Knowledge-Binding ---
+
+type TopicKnowledgeBindingItem struct {
+	Id            int    `json:"id"`
+	Topic         string `json:"topic"`
+	KnowledgeCode string `json:"knowledgeCode"`
+	KnowledgeName string `json:"knowledgeName"`
+	Enabled       bool   `json:"enabled"`
+	CreateTime    int    `json:"createTime"`
+	UpdateTime    int    `json:"updateTime"`
+}
+
+type AdminTopicKnowledgeBindingsReq struct {
+	g.Meta `path:"/admin/topic-knowledge-bindings" method:"get" tags:"V1/Admin" sm:"topic knowledge bindings" dc:"获取主题与知识库绑定列表"`
+}
+
+type AdminTopicKnowledgeBindingsRes struct {
+	List []TopicKnowledgeBindingItem `json:"list"`
+}
+
+type AdminCreateTopicKnowledgeBindingReq struct {
+	g.Meta         `path:"/admin/topic-knowledge-bindings" method:"post" tags:"V1/Admin" sm:"create topic knowledge binding" dc:"创建主题与知识库绑定"`
+	Topic          string `json:"topic" v:"required#主题不能为空"`
+	KnowledgeCode  string `json:"knowledgeCode" v:"required#知识库编码不能为空"`
+}
+
+type AdminCreateTopicKnowledgeBindingRes struct {
+	Item TopicKnowledgeBindingItem `json:"item"`
+}
+
+type AdminToggleTopicKnowledgeBindingReq struct {
+	g.Meta  `path:"/admin/topic-knowledge-bindings/{id}/toggle" method:"put" tags:"V1/Admin" sm:"toggle topic knowledge binding" dc:"切换绑定启用状态"`
+	Id      int  `p:"id" in:"path" dc:"绑定ID"`
+	Enabled bool `json:"enabled"`
+}
+
+type AdminToggleTopicKnowledgeBindingRes struct{}
+
+type AdminDeleteTopicKnowledgeBindingReq struct {
+	g.Meta `path:"/admin/topic-knowledge-bindings/{id}" method:"delete" tags:"V1/Admin" sm:"delete topic knowledge binding" dc:"删除绑定"`
+	Id     int `p:"id" in:"path" dc:"绑定ID"`
+}
+
+type AdminDeleteTopicKnowledgeBindingRes struct{}
+
+// --- Document-Relation ---
+
+type DocumentRelationItem struct {
+	Id           int    `json:"id"`
+	FromDocId    int    `json:"fromDocId"`
+	FromDocTitle string `json:"fromDocTitle"`
+	ToDocId      int    `json:"toDocId"`
+	ToDocTitle   string `json:"toDocTitle"`
+	RelType      string `json:"relType"`
+	Description  string `json:"description"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type AdminDocumentRelationsReq struct {
+	g.Meta `path:"/admin/document-relations" method:"get" tags:"V1/Admin" sm:"document relations" dc:"获取文档关联列表"`
+}
+
+type AdminDocumentRelationsRes struct {
+	List []DocumentRelationItem `json:"list"`
+}
+
+type AdminCreateDocumentRelationReq struct {
+	g.Meta      `path:"/admin/document-relations" method:"post" tags:"V1/Admin" sm:"create document relation" dc:"创建文档关联"`
+	FromDocId   int    `json:"fromDocId" v:"required#来源文档ID不能为空"`
+	ToDocId     int    `json:"toDocId" v:"required#目标文档ID不能为空"`
+	RelType     string `json:"relType" v:"required#关联类型不能为空"`
+	Description string `json:"description"`
+}
+
+type AdminCreateDocumentRelationRes struct{}
+
+type AdminDeleteDocumentRelationReq struct {
+	g.Meta `path:"/admin/document-relations/{id}" method:"delete" tags:"V1/Admin" sm:"delete document relation" dc:"删除文档关联"`
+	Id     int `p:"id" in:"path" dc:"关联ID"`
+}
+
+type AdminDeleteDocumentRelationRes struct{}
+
+type AdminAutoDocumentRelationReq struct {
+	g.Meta         `path:"/admin/document-relations/auto" method:"post" tags:"V1/Admin" sm:"auto discover relations" dc:"自动发现文档关联"`
+	KnowledgeCode  string `json:"knowledgeCode" v:"required#知识库编码不能为空"`
+	DryRun         bool   `json:"dryRun"`
+}
+
+type AdminAutoDocumentRelationRes struct {
+	Discovered []DocumentRelationItem `json:"discovered,omitempty"`
+	Created    int                    `json:"created,omitempty"`
+}
+
+type ComplianceIssueItem struct {
+	DocumentId    int    `json:"documentId"`
+	DocumentTitle string `json:"documentTitle"`
+	IssueType     string `json:"issueType"`
+	Description   string `json:"description"`
+	Severity      string `json:"severity"`
+}
+
+type AdminDocumentComplianceReq struct {
+	g.Meta         `path:"/admin/documents/compliance" method:"post" tags:"V1/Admin" sm:"document compliance check" dc:"文档合规检查"`
+	KnowledgeCode  string `json:"knowledgeCode" v:"required#知识库编码不能为空"`
+}
+
+type AdminDocumentComplianceRes struct {
+	Issues []ComplianceIssueItem `json:"issues"`
+}
+
+// --- Metrics ---
+
+type MetricItem struct {
+	Id                int       `json:"id"`
+	Topic             string    `json:"topic"`
+	MetricName        string    `json:"metricName"`
+	DisplayName       string    `json:"displayName"`
+	Description       string    `json:"description"`
+	Unit              string    `json:"unit"`
+	Dimensions        []string  `json:"dimensions"`
+	DefaultThreshold  *float64  `json:"defaultThreshold"`
+	ThresholdDirection string   `json:"thresholdDirection"`
+	ChartTypeHint     string    `json:"chartTypeHint"`
+	IsActive          bool      `json:"isActive"`
+}
+
+type AdminMetricsReq struct {
+	g.Meta `path:"/admin/metrics" method:"get" tags:"V1/Admin" sm:"metrics" dc:"获取指标目录列表"`
+}
+
+type AdminMetricsRes struct {
+	List []MetricItem `json:"list"`
+}
+
+type AdminCreateMetricReq struct {
+	g.Meta             `path:"/admin/metrics" method:"post" tags:"V1/Admin" sm:"create metric" dc:"创建指标"`
+	Topic              string   `json:"topic" v:"required#主题不能为空"`
+	MetricName         string   `json:"metricName" v:"required#指标名不能为空"`
+	DisplayName        string   `json:"displayName" v:"required#显示名不能为空"`
+	Unit               string   `json:"unit"`
+	DefaultThreshold   *float64 `json:"defaultThreshold"`
+	ThresholdDirection string   `json:"thresholdDirection"`
+	ChartTypeHint      string   `json:"chartTypeHint"`
+}
+
+type AdminCreateMetricRes struct{}
+
+type AdminUpdateMetricReq struct {
+	g.Meta              `path:"/admin/metrics/{id}" method:"put" tags:"V1/Admin" sm:"update metric" dc:"更新指标"`
+	Id                  int       `p:"id" in:"path" dc:"指标ID"`
+	Topic               string    `json:"topic,omitempty"`
+	MetricName          string    `json:"metricName,omitempty"`
+	DisplayName         string    `json:"displayName,omitempty"`
+	Description         string    `json:"description,omitempty"`
+	Unit                string    `json:"unit,omitempty"`
+	Dimensions          []string  `json:"dimensions,omitempty"`
+	DefaultThreshold    *float64  `json:"defaultThreshold,omitempty"`
+	ThresholdDirection  string    `json:"thresholdDirection,omitempty"`
+	ChartTypeHint       string    `json:"chartTypeHint,omitempty"`
+}
+
+type AdminUpdateMetricRes struct{}
+
+type AdminDeleteMetricReq struct {
+	g.Meta `path:"/admin/metrics/{id}" method:"delete" tags:"V1/Admin" sm:"delete metric" dc:"删除指标"`
+	Id     int `p:"id" in:"path" dc:"指标ID"`
+}
+
+type AdminDeleteMetricRes struct{}
+
+type AdminToggleMetricReq struct {
+	g.Meta `path:"/admin/metrics/{id}/toggle" method:"put" tags:"V1/Admin" sm:"toggle metric" dc:"切换指标启用状态"`
+	Id     int `p:"id" in:"path" dc:"指标ID"`
+}
+
+type AdminToggleMetricRes struct{}
